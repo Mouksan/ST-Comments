@@ -669,3 +669,10 @@
    above this window (2999) and its menus (3500). A previous override here
    forced them down to 4000, below ST's own 4001-4100 layers (character popup,
    chat-select, drawer combos). */
+
+/* Landing page (no chat open): the window is hidden from JS (hasOpenChat),
+   and both launchers go with it — they only make sense inside a chat. */
+body.dsc-no-chat #dsc_launcher,
+body.dsc-no-chat .dsc_fab {
+    display: none !important;
+}

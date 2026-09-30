@@ -58,10 +58,15 @@ export const defaultSettings = Object.freeze({
     includeUser: false,               // include user persona in context
     includePersona: false,
     includeCharacterDescription: false,
+    // community memory: include cached comment threads of preceding AI posts
+    // (active swipe of each past post) as [Reader comments on ...] blocks
+    includePastComments: false,
+    pastCommentsDepth: 2,             // how many past posts' threads to include (max)
 
-    // prompt template: builtin 'main' (chat-styles/main.md — vibe) + user copies in localforage.
-    // The contract (header + FORMAT RULES) lives in code (prompt-contract.js), not localforage.
+    // prompt template: builtin 'main' (chat-styles/main.md — vibe) + user copies.
+    // The contract (header + FORMAT RULES) lives in code (prompt-contract.js).
     promptTemplate: 'main',
+    promptTemplates: {},              // { name: text } — server-synced extension settings (was browser-local localforage)
 
     // jailbreak block
     enableJailbreakBlock: false,
@@ -97,8 +102,6 @@ export const state = {
     generationObservedTarget: null,
     lastGenerationDiagnostics: null,
     currentChatId: null,
-    // True only while the panel is folded by the auto-hide, never by the user.
-    autoCollapsed: false,
     currentPostId: null,
     currentSwipeIdx: 0,
     // Cache of activated world-info entries from ST's WORLD_INFO_ACTIVATED event.
@@ -334,6 +337,7 @@ export const NUMERIC_SETTINGS = Object.freeze({
     userCount:    Object.freeze({ min: 1, max: 100, fallback: 5 }),
     fontSize:     Object.freeze({ min: 8, max: 32, fallback: 15 }),
     contextDepth: Object.freeze({ min: 2, max: 50, fallback: 4 }),
+    pastCommentsDepth: Object.freeze({ min: 1, max: 10, fallback: 2 }),
     soundVolume:  Object.freeze({ min: 0, max: 100, fallback: 30 }),
 });
 
@@ -464,12 +468,11 @@ export function observePersistence(result, operationKey, userMessage) {
         });
 }
 
-// ── Diagnostic restore log (TEMPORARY probe - mobile feed-loss investigation) ──
+// ── Diagnostic restore log ──
 // Records the last restore/navigation decisions to an in-memory ring buffer so
 // they can be read from the ST Debug Menu (/debug -> "DS Comments: лог
-// восстановлений") WITHOUT browser DevTools (awkward on mobile). The probe only
-// records; it never alters restore behaviour. Remove once the root cause of
-// mobile commentary loss is confirmed.
+// восстановлений") WITHOUT browser DevTools (awkward on mobile). Records only;
+// it never alters restore behaviour.
 const _restoreLog = [];
 const _RESTORE_LOG_MAX = 200;
 let _lastFpDiag = '';

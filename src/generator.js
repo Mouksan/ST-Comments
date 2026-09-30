@@ -8,13 +8,14 @@
  * source block as its own user message (see assemblePrompt).
  */
 
-import { state, getCtx, BASE_URL, resolveSTMacro, buildPrompt, extractText, trace, warn, error, tr, escapeHtml, isCommentaryGenerationEligible, resolveLastAIPost, beginGenerationEpoch, isEpochCurrent, LF_PROMPTS, pushRestoreLog, setLastFpDiag, getLastFpDiag, saveSettings } from './core.js';
+import { state, getCtx, BASE_URL, resolveSTMacro, buildPrompt, extractText, trace, warn, error, tr, escapeHtml, isCommentaryGenerationEligible, resolveLastAIPost, beginGenerationEpoch, isEpochCurrent, pushRestoreLog, setLastFpDiag, getLastFpDiag } from './core.js';
 import { PROMPT_CONTRACT } from './prompt-contract.js';
 import { renderMessages } from './renderer.js';
 import { recordEvent } from './event-log.js';
 import { parseCommentary } from './parser.js';
 import { getCachedPost, setCurrentPost, storeFeed, showCurrentFeed, getCurrentFeedSource } from './cache.js';
-import { getChatLoreConfig, LORE_MODE, LORE_SCOPE, collectAutomaticLore, resolveManualLore, buildGenerationFingerprintInput, buildGenerationFingerprint } from './lorebooks.js';
+import { getChatLoreConfig, LORE_MODE, LORE_SCOPE, collectAutomaticLore, resolveManualLore, buildGenerationFingerprintInput, buildGenerationFingerprint, hashFingerprint } from './lorebooks.js';
+import { collectPastCommentThreads, getMirrorRevision } from './feed-file-store.js';
 import { showFeedHtml as setFeedText } from './ui/feed-controller.js';
 import { setStatus, syncRegenVisual } from './ui/chrome.js';
 import { playNotificationSound } from './sound.js';
@@ -32,34 +33,40 @@ const _builtinPromptCache = {};
  *
  * @returns {Promise<string>} raw template text
  */
+async function fetchBuiltinPrompt(name) {
+    if (_builtinPromptCache[name]) return _builtinPromptCache[name];
+    const resp = await fetch(`${BASE_URL}/chat-styles/${name}.md`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const text = await resp.text();
+    _builtinPromptCache[name] = text;
+    return text;
+}
+
 export async function loadStylePrompt() {
     const settings = state.settings;
     const name = settings.promptTemplate || 'main';
 
-    // 1. User template (localforage working copy)
-    try {
-        const userPrompts = await SillyTavern.libs.localforage.getItem(LF_PROMPTS) || {};
-        // hasOwn, not truthiness: an empty string is a legitimately saved (if
-        // unusual) template and must not silently fall through to the builtin.
-        if (Object.hasOwn(userPrompts, name)) return userPrompts[name];
-    } catch { /* fall through */ }
+    // 1. User template (settings working copy — server-synced, survives
+    //    browsers/devices; see migrateTemplatesFromLocalforage).
+    const userPrompts = settings.promptTemplates;
+    // hasOwn, not truthiness: an empty string is a legitimately saved (if
+    // unusual) template and must not silently fall through to the builtin.
+    if (userPrompts && typeof userPrompts === 'object' && Object.hasOwn(userPrompts, name)) {
+        return userPrompts[name];
+    }
 
     // 2. Builtin .md (cached) — vibe only, contract lives in code
-    if (_builtinPromptCache[name]) return _builtinPromptCache[name];
     try {
-        const resp = await fetch(`${BASE_URL}/chat-styles/${name}.md`);
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        const text = await resp.text();
-        _builtinPromptCache[name] = text;
-        return text;
+        return await fetchBuiltinPrompt(name);
     } catch (e) {
         warn(`Failed to load prompt template ${name}.md:`, e);
-        // 3. Fallback to main builtin (persisted so the missing template name
-        // does not keep 404ing on every generation).
+        // 3. Transient fallback for THIS generation only. Never rewrite the
+        // user's selection: a template missing here may exist elsewhere
+        // (other browser/device) and reappear later — persisting 'main' here
+        // used to silently destroy the choice on the server.
         if (name !== 'main') {
-            settings.promptTemplate = 'main';
-            saveSettings();
-            return loadStylePrompt();
+            recordEvent('warn', `event=template_missing name=${name} fallback=main(transient)`);
+            try { return await fetchBuiltinPrompt('main'); } catch { return ''; }
         }
         return '';
     }
@@ -182,6 +189,95 @@ function buildChatHistory(anchorMsgId, anchorSwipeIdx) {
     return [previous, anchor].filter(Boolean).join('\n\n');
 }
 
+// ── Community memory: comment threads of past chapters ──
+// Threads of the PRECEDING AI posts (active swipe of each) serialized into
+// prompt blocks. The anchor's own thread and anything after it are excluded
+// by collectPastCommentThreads — regenerating post N must not quote post N.
+
+// Per-thread serialization ceiling: with count up to 100 a thread can be
+// huge; the block is community memory, not a transcript. Oldest comments
+// are trimmed first — replies lose their target quote-wise, so trim whole
+// comments, never lines.
+const THREAD_BUDGET_CHARS = 2000;
+const THREAD_MESSAGE_SEPARATOR = '\n';
+
+function normalizeCommentText(text) {
+    return String(text ?? '').replace(/\s*\n\s*/g, ' / ').trim();
+}
+
+/**
+ * One prompt line per comment: `@nick: text`, replies as
+ * `@nick (replying to @target, "quote"): text` — mirrors the rendered reply
+ * bar. Returns null for comments that carry no usable text.
+ */
+function serializeThreadMessage(msg) {
+    const username = String(msg?.username ?? '').trim();
+    const content = normalizeCommentText(msg?.content);
+    if (!username || !content) return null;
+    const replyTo = String(msg?.replyTo ?? '').trim();
+    const replyQuote = normalizeCommentText(msg?.replyQuote);
+    const prefix = replyTo
+        ? `@${username} (replying to @${replyTo}${replyQuote ? `, "${replyQuote}"` : ''}): `
+        : `@${username}: `;
+    return prefix + content;
+}
+
+/**
+ * Serialize one cached thread into its block body within the char budget.
+ * Keeps the LAST messages within budget (newest survive — replies reference
+ * recent comments, and fresh reactions matter more to the community voice).
+ */
+function serializeThread(thread) {
+    const lines = [];
+    let total = 0;
+    for (let i = thread.messages.length - 1; i >= 0; i--) {
+        const line = serializeThreadMessage(thread.messages[i]);
+        if (line === null) continue;
+        const cost = line.length + THREAD_MESSAGE_SEPARATOR.length;
+        if (total + cost > THREAD_BUDGET_CHARS && lines.length) break;
+        if (total + cost > THREAD_BUDGET_CHARS && !lines.length) continue;   // skip oversized single comments
+        lines.unshift(line);
+        total += cost;
+    }
+    return lines.join(THREAD_MESSAGE_SEPARATOR);
+}
+
+/**
+ * Build the [Reader comments on ...] user-message blocks from the cached
+ * threads of preceding posts. Oldest block first. The thread of the post
+ * immediately before the anchor gets the "previous chapter" framing (its
+ * arguments may still be hot); older ones get the "earlier chapter" framing.
+ * Returns [] when the feature is off or there is nothing to include.
+ */
+function buildPastCommentParts(anchorMsgId) {
+    const settings = state.settings;
+    // noSaveMode keeps one feed per chat — no per-post thread history exists.
+    if (!settings.includePastComments || settings.noSaveMode) return [];
+    const threads = collectPastCommentThreads(
+        { msgId: anchorMsgId, swipeIdx: 0 },
+        parseInt(settings.pastCommentsDepth) || 0,
+    );
+    const blocks = [];
+    for (let index = 0; index < threads.length; index++) {
+        const body = serializeThread(threads[index]);
+        // A thread whose every comment exceeds the per-thread budget serializes
+        // to '' — an empty [.. \n] block in the prompt. Skip it instead; the
+        // framing stays anchored to the thread's original position.
+        if (!body) continue;
+        const isPrevious = index === threads.length - 1;
+        const header = isPrevious
+            ? `[Reader comments on the previous chapter — the most recent discussion before this one. The commenters remember what they said there; ongoing arguments and callbacks are welcome, but do NOT react to it as current:`
+            : `[Reader comments on an earlier chapter — part of this community's past discussion. The commenters remember it; callbacks and running jokes from it are welcome, but do NOT react to it as current:`;
+        blocks.push(`${header}\n${body}]`);
+    }
+    return blocks;
+}
+
+// Test-only export (NODE_TEST guard — invisible in the ST browser host).
+export const _testBuildPastCommentParts = typeof process !== 'undefined' && process?.env?.NODE_TEST === '1'
+    ? (anchorMsgId) => buildPastCommentParts(anchorMsgId)
+    : undefined;
+
 // Test-only export (NODE_TEST guard — invisible in the ST browser host).
 export const _testBuildChatHistory = typeof process !== 'undefined' && process?.env?.NODE_TEST === '1'
     ? (anchorMsgId, swipeIdx) => buildChatHistory(anchorMsgId, swipeIdx)
@@ -211,6 +307,7 @@ function assemblePrompt(parts) {
         parts.earlier.length
             ? `[Previously — earlier chapters; you've read and remember them, do NOT react to these as current:\n${parts.earlier.join('\n')}]`
             : '',
+        ...parts.pastComments,
         parts.anchor,
     ].filter(Boolean);
     if (!userMessages.length) userMessages.push('Generate the commentary now.');
@@ -228,9 +325,11 @@ function assembleCompletePrompt({ ctx, stylePrompt, lore, anchorMsgId, anchorSwi
     const settings = state.settings;
     const context = buildContextParts(ctx, lore);
     const history = buildChatHistoryParts(anchorMsgId, anchorSwipeIdx, ctx);
+    const pastComments = buildPastCommentParts(anchorMsgId);
     const parts = {
         ...context,
         ...history,
+        pastComments,
         systemPrompt: buildPrompt(stylePrompt, {
             count: parseInt(settings.userCount) || 5,
             contract: PROMPT_CONTRACT,
@@ -243,6 +342,7 @@ function assembleCompletePrompt({ ctx, stylePrompt, lore, anchorMsgId, anchorSwi
     return {
         ...assemblePrompt(parts),
         selectedHistoryMessages: history.earlier.length,
+        pastCommentThreads: pastComments.length,
         loreIncluded: Boolean(context.lore),
         personaIncluded: Boolean(context.persona),
         characterIncluded: Boolean(context.character),
@@ -309,30 +409,69 @@ async function buildCurrentFingerprintInput(settings, loreConfig, stylePrompt) {
 // handler fires on every AI message, and on rapid renders (streaming, swipe
 // redraw) this duplicated async work — localforage + profile lookup — runs
 // per message even when generation would not occur. The fingerprint is a
-// pure function of (settings, loreConfig, stylePrompt, profile); those
-// inputs only change across chat switches (CHAT_CHANGED bumps the epoch),
-// lore-config changes (the lore picker's invalidate bumps it) and profile
-// updates (CONNECTION_PROFILE_UPDATED). Settings edits that do NOT bump the
-// epoch (apiSource / promptTemplate / style / profileId / count / depth) are
-// covered by `_fpSettingsKey` — a compact serialization of the fields that
-// flow into buildGenerationFingerprintInput (see below). Cache key =
-// (epoch, chatId, settings key): a hit skips both awaits entirely. If a
-// relevant input ever changes without any key component changing, the worst
-// case is a stale cache-query returning a cache miss at the cached fp —
-// generation still runs and builds the real fp.
-let _fpCacheKey = null;   // `${epoch}:${chatId}:${settingsKey}`
+// pure function of (settings, loreConfig, stylePrompt, profile) plus, when
+// includePastComments is on, the CONTENT of the cached past-comment threads
+// (pastCommentsHash) and which anchor post they are gathered for. Those
+// thread inputs only change across chat switches (CHAT_CHANGED bumps the
+// epoch), lore-config changes (the lore picker's invalidate bumps it) and
+// profile updates (CONNECTION_PROFILE_UPDATED) — EXCEPT mirror mutations:
+// regenerating an older post rewrites its thread without any epoch bump,
+// so the cache key also carries the feed-store mirror revision. Settings
+// edits that do NOT bump the epoch (apiSource / promptTemplate / style /
+// profileId / count / depth) are covered by `_fpSettingsKey` — a compact
+// serialization of the fields that flow into buildGenerationFingerprintInput
+// (see below). Cache key = (epoch, chatId, settings key, mirror revision,
+// anchor). If a relevant input ever changes without any key component
+// changing, the worst case is a stale cache-query returning a cache miss at
+// the cached fp — generation still runs and builds the real fp.
+let _fpCacheKey = null;   // `${epoch}:${chatId}:${settingsKey}:${mirrorRev}:${anchor}`
 let _fpCacheValue = null; // { fp: string, diag: string }
 
-export async function getCurrentGenerationFingerprint(ctx = getCtx()) {
+/**
+ * Content hash of the past-comment threads included for this anchor. Empty
+ * when the feature is off or no cached threads exist — keeps the fp
+ * identical to the pre-feature fp for unchanged prompts.
+ */
+function computePastCommentsHash(anchorMsgId) {
+    const settings = state.settings;
+    if (!settings.includePastComments || settings.noSaveMode) return '';
+    const threads = collectPastCommentThreads(
+        { msgId: anchorMsgId, swipeIdx: 0 },
+        parseInt(settings.pastCommentsDepth) || 0,
+    );
+    if (!threads.length) return '';
+    const canonical = JSON.stringify(threads.map(t => [
+        t.msgId,
+        t.swipeIdx,
+        t.messages.map(m => [m?.username ?? '', m?.content ?? '', m?.replyTo ?? '', m?.replyQuote ?? '']),
+    ]));
+    return hashFingerprint(canonical);
+}
+
+export async function getCurrentGenerationFingerprint(ctx = getCtx(), anchorMsgId = undefined) {
     const settings = state.settings;
     const chatId = ctx?.chatId;
-    const cacheKey = `${state.generationEpoch}:${chatId}:${_fpSettingsKey(settings)}`;
+    const includeThreads = Boolean(settings.includePastComments) && !settings.noSaveMode;
+    // Threads belong to a specific anchor: without one the fp is only used
+    // for anchor-less probes, where thread content must not be baked in.
+    const anchorKey = includeThreads ? String(anchorMsgId ?? '') : '';
+    const cacheKey = `${state.generationEpoch}:${chatId}:${_fpSettingsKey(settings)}:${getMirrorRevision()}:${anchorKey}`;
     if (_fpCacheKey === cacheKey && _fpCacheValue) {
         pushRestoreLog('fingerprint', `cache hit diag=${_fpCacheValue.diag} fp=${_fpCacheValue.fp}`);
         return _fpCacheValue.fp;
     }
     const stylePrompt = await loadStylePrompt();
     const input = await buildCurrentFingerprintInput(settings, getChatLoreConfig(ctx), stylePrompt);
+    if (includeThreads && anchorMsgId !== undefined && anchorMsgId !== null) {
+        input.includePastComments = true;
+        input.pastCommentsDepth = Number.isFinite(parseInt(settings.pastCommentsDepth))
+            ? Math.max(0, Math.min(10, parseInt(settings.pastCommentsDepth)))
+            : null;
+        input.pastCommentsHash = computePastCommentsHash(anchorMsgId);
+    } else {
+        input.includePastComments = false;
+        input.pastCommentsHash = '';
+    }
     const fp = buildGenerationFingerprint(input);
     const diag = getLastFpDiag();
     _fpCacheKey = cacheKey;
@@ -351,7 +490,8 @@ function _fpSettingsKey(s) {
     return [
         s.apiSource, s.profileId, s.customEndpoint, s.customModel,
         s.userCount, s.contextDepth, s.includeChatHistory, s.includePersona,
-        s.includeCharacterDescription, s.promptTemplate, s.enableJailbreakBlock,
+        s.includeCharacterDescription, s.includePastComments, s.pastCommentsDepth,
+        s.promptTemplate, s.enableJailbreakBlock,
         s.jailbreakRole, s.jailbreakText,
     ].join('|');
 }
@@ -475,7 +615,7 @@ export async function generateFeed(targetMsgId, targetSwipeIdx, forceRegenerate 
         .filter(Boolean);
     for (const el of launcherEls) el.classList.add('dsc_generating');
     setFeedText('');   // clear feed → empty-state renders blank (generating) instead of CTA
-        setStatus(tr('Generation in progress', 'dscomments.status.generating'), { isAction: true, actionLabel: tr('Cancel', 'dscomments.action.cancel') });
+    setStatus(tr('Generation in progress', 'dscomments.status.generating'), { isAction: true, actionLabel: tr('Cancel', 'dscomments.action.cancel') });
     syncRegenVisual();   // ⟳ → spinner (Lucide)
 
     try {
@@ -491,6 +631,19 @@ export async function generateFeed(targetMsgId, targetSwipeIdx, forceRegenerate 
 
         const fingerprintStartedAt = performance.now();
         const generationInput = await buildCurrentFingerprintInput(settings, loreConfig, stylePrompt);
+        if (settings.includePastComments && !settings.noSaveMode) {
+            // The stored fp must reflect the threads INCLUDED IN THIS PROMPT:
+            // a changed/absent past-thread set is a different prompt, and the
+            // cache entry written below must not hit for another thread set.
+            generationInput.includePastComments = true;
+            generationInput.pastCommentsDepth = Number.isFinite(parseInt(settings.pastCommentsDepth))
+                ? Math.max(0, Math.min(10, parseInt(settings.pastCommentsDepth)))
+                : null;
+            generationInput.pastCommentsHash = computePastCommentsHash(resolvedMsgId);
+        } else {
+            generationInput.includePastComments = false;
+            generationInput.pastCommentsHash = '';
+        }
         markPhase('fingerprint', fingerprintStartedAt);
         if (!isEpochCurrent(epoch)) {
             trace('generateFeed: discarding stale result (epoch changed during fingerprint input resolution)');
@@ -578,6 +731,7 @@ export async function generateFeed(targetMsgId, targetSwipeIdx, forceRegenerate 
         trace('generateFeed: prompt built', {
             anchor: `#${resolvedMsgId}[${resolvedSwipeIdx}]`,
             historyMessages: assembled.selectedHistoryMessages,
+            pastCommentThreads: assembled.pastCommentThreads,
             loreIncluded: assembled.loreIncluded,
             personaIncluded: assembled.personaIncluded,
             characterIncluded: assembled.characterIncluded,
@@ -633,7 +787,7 @@ export async function generateFeed(targetMsgId, targetSwipeIdx, forceRegenerate 
         }
 
         setFeedText(html);
-        storeFeed(html, resolvedMsgId, resolvedSwipeIdx, generationFp);
+        storeFeed(html, resolvedMsgId, resolvedSwipeIdx, generationFp, messages);
         outcome = 'stored-and-rendered';
         recordEvent('log', `event=generation_store target=#${resolvedMsgId}[${resolvedSwipeIdx}] result=success htmlChars=${html.length}`);
         setCurrentPost(resolvedMsgId, resolvedSwipeIdx);

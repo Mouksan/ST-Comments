@@ -59,6 +59,14 @@ const _CATCH_UP_MIN_INTERVAL_MS = 200;
 let _initRetryRaf = 0;
 let _initRetries = 0;
 const _INIT_MAX_RETRIES = 30;   // ~0.5s at 60fps — enough for a reveal animation
+// Slow-retry state after the rAF budget is exhausted: the chat may still be
+// hidden behind a closed drawer / slow reveal for seconds. A few spaced-out
+// retries keep scroll-follow alive without spinning forever; any successful
+// attach or a disable/chat-switch teardown resets them.
+let _initGiveUpRetries = 0;
+let _initGiveUpTimer = 0;
+const _INIT_GIVEUP_RETRIES = 4;
+const _INIT_GIVEUP_DELAY_MS = 2500;
 
 /**
  * Initialize IntersectionObserver for scroll-based post tracking.
@@ -71,7 +79,8 @@ export function initPostScrollObserver() {
     if (_scrollRaf) cancelAnimationFrame(_scrollRaf);
     if (_pickRaf) cancelAnimationFrame(_pickRaf);
     if (_suppressedRepickTimer) clearTimeout(_suppressedRepickTimer);
-    _scrollRaf = 0; _pickRaf = 0; _suppressedRepickTimer = 0; _suppressedRepickDueAt = 0;
+    if (_initGiveUpTimer) clearTimeout(_initGiveUpTimer);
+    _scrollRaf = 0; _pickRaf = 0; _suppressedRepickTimer = 0; _suppressedRepickDueAt = 0; _initGiveUpTimer = 0;
     _candidates.clear();
     _lastCatchUpAt = 0;   // allow immediate first-pick catch-up after rebuild
 
@@ -101,6 +110,18 @@ export function initPostScrollObserver() {
                 _initRetryRaf = 0;
                 initPostScrollObserver();
             });
+        } else if (_initGiveUpRetries < _INIT_GIVEUP_RETRIES) {
+            // The fast rAF budget ran out, but the chat may still surface later
+            // (closed drawer revealed seconds after load, slow mobile reveal).
+            // Space out a few last retries instead of staying dead for the
+            // whole session. The next successful attach resets the counter.
+            _initRetries = 0;
+            _initGiveUpRetries++;
+            pushRestoreLog('observer', `give up: scheduling slow retry #${_initGiveUpRetries}/${_INIT_GIVEUP_RETRIES} in ${_INIT_GIVEUP_DELAY_MS}ms`);
+            _initGiveUpTimer = setTimeout(() => {
+                _initGiveUpTimer = 0;
+                if (panelCanObserve()) initPostScrollObserver();
+            }, _INIT_GIVEUP_DELAY_MS);
         } else {
             _initRetries = 0;
             warn('initPostScrollObserver: #chat stayed zero-height, giving up');
@@ -109,6 +130,7 @@ export function initPostScrollObserver() {
         return;
     }
     _initRetries = 0;
+    _initGiveUpRetries = 0;   // chat is laid out — slow-retry budget no longer needed
 
     function resolveEligibleMessage(el, ctx = getCtx()) {
         const msgId = el.getAttribute('mesid');
@@ -339,6 +361,8 @@ function _removeScrollHandler() {
 export function disconnectObservers() {
     if (_initRetryRaf) { cancelAnimationFrame(_initRetryRaf); _initRetryRaf = 0; }
     _initRetries = 0;
+    if (_initGiveUpTimer) { clearTimeout(_initGiveUpTimer); _initGiveUpTimer = 0; }
+    _initGiveUpRetries = 0;
     if (_postScrollObserver) { _postScrollObserver.disconnect(); _postScrollObserver = null; }
     if (_postMutObserver) { _postMutObserver.disconnect(); _postMutObserver = null; }
     _removeScrollHandler();
@@ -401,7 +425,7 @@ function scheduleObserverRestart(timerKey, delay) {
 
 function buildEventHandlers(generateFeed, ctx, dependencies = {}) {
     const handlers = [];
-    const { getGenerationFingerprint, onChatChanged, onPanelCollapseChanged } = dependencies;
+    const { getGenerationFingerprint, onChatChanged, onChatPresenceChanged } = dependencies;
 
     // ── CHAT_CHANGED: abort in-flight gen, invalidate epoch, restore cache ──
     handlers.push([ctx.eventTypes.CHAT_CHANGED, async () => {
@@ -424,12 +448,12 @@ function buildEventHandlers(generateFeed, ctx, dependencies = {}) {
         // a message in the new chat (chatId check would reject it anyway — this
         // drop makes the lifecycle explicit and frees the memory).
         state.pendingActivatedWorldInfo = null;
-        if (chatId && state.autoCollapsed) {
-            // Back in a chat: undo only our own automatic collapse.
-            state.autoCollapsed = false;
-            state.settings.collapsed = false;
-            onPanelCollapseChanged?.();
-        }
+        // The panel and its launchers exist only inside a chat. Visibility is
+        // derived live from "is a chat open" (see hasOpenChat in window.js), so
+        // this just re-applies it; the user's own collapsed flag is untouched.
+        // Runs on EVERY CHAT_CHANGED, before the restore below, so the observer
+        // restart scheduled afterwards already sees the panel as visible.
+        onChatPresenceChanged?.();
         if (chatId !== state.currentChatId) {
             state.currentChatId = chatId;
             state.currentPostId = null;
@@ -437,13 +461,6 @@ function buildEventHandlers(generateFeed, ctx, dependencies = {}) {
             if (!chatId) {
                 setFeedText('');
                 updatePostIndicator();
-                // Landing page: fold the panel away, but remember that WE did it,
-                // so a panel the user collapsed by hand stays collapsed later.
-                if (!state.settings.collapsed) {
-                    state.autoCollapsed = true;
-                    state.settings.collapsed = true;
-                    onPanelCollapseChanged?.();
-                }
             } else if (state.settings.noSaveMode) {
                 showCurrentFeed();
             } else {
@@ -462,6 +479,12 @@ function buildEventHandlers(generateFeed, ctx, dependencies = {}) {
                     updatePostIndicator();
                     recordEvent('log', `event=restore chat=${chatId} source=chat-restore status=no-target`);
                 }
+                // This branch used to return without scheduling the observer
+                // restart, so a saveMode chat switch left the observer bound to
+                // the PREVIOUS chat's message nodes — scroll-follow silently
+                // died until the panel was reopened. 600 ms covers the tail of
+                // printMessages/layout after the restore.
+                scheduleObserverRestart('chat', 600);
                 return;
             }
             observeAsyncCallback(onChatChanged?.(ctx2), 'onChatChanged');
@@ -514,7 +537,10 @@ function buildEventHandlers(generateFeed, ctx, dependencies = {}) {
         let fingerprintResolved = Boolean(getGenerationFingerprint);
         if (!state.settings.noSaveMode && getGenerationFingerprint) {
             try {
-                generationFp = await getGenerationFingerprint(ctx2);
+                // Anchor-aware: with includePastComments on, the fp includes
+                // this post's past-thread set, matching what generateFeed will
+                // store — otherwise the pre-check could never cache-hit.
+                generationFp = await getGenerationFingerprint(ctx2, msgIdStr);
             } catch (cause) {
                 fingerprintResolved = false;
                 warn('getGenerationFingerprint callback error:', cause);
@@ -555,9 +581,9 @@ function buildEventHandlers(generateFeed, ctx, dependencies = {}) {
             if (result.status === 'superseded') return;
             updatePostIndicator();
         } catch (e) {
-                warn('MESSAGE_SWIPED handler error:', e);
-                recordEvent('error', `event=handler callback=MESSAGE_SWIPED chat=${getCtx()?.chatId || 'none'} error=${e?.message || e}`);
-            }
+            warn('MESSAGE_SWIPED handler error:', e);
+            recordEvent('error', `event=handler callback=MESSAGE_SWIPED chat=${getCtx()?.chatId || 'none'} error=${e?.message || e}`);
+        }
     }]);
 
     // ── MESSAGE_DELETED: GC + pointer fallback ──
@@ -735,7 +761,7 @@ export function isEventsBound() {
  * Bind all ST event listeners.
  * @param {(msgId, swipe, force) => Promise<void>} generateFeed
  * @param {object} [ctxOverride] - deterministic context for tests.
- * @param {{ getGenerationFingerprint?: (ctx: object) => string|Promise<string>, onChatChanged?: (ctx: object) => unknown, onPanelCollapseChanged?: () => unknown }} [dependencies]
+ * @param {{ getGenerationFingerprint?: (ctx: object) => string|Promise<string>, onChatChanged?: (ctx: object) => unknown, onChatPresenceChanged?: () => unknown }} [dependencies]
  */
 export function bindEvents(generateFeed, ctxOverride, dependencies = {}) {
     if (_eventsBound) return true;

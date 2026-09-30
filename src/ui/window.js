@@ -7,7 +7,7 @@
  * #dscFeed (content), #dscResize (grip). chrome.js/quickmenu.js hang off these.
  */
 
-import { state, flushSettings, debounce, tr } from '../core.js';
+import { state, flushSettings, debounce, tr, getCtx } from '../core.js';
 import { whenSendFormReady } from './dom-ready.js';
 import { normalizeDesktopGeometry } from './window-geometry.js';
 import { applyPendingFeedScrollReset } from './feed-controller.js';
@@ -178,13 +178,48 @@ function observeStChrome() {
 // ── Mount / visibility ──
 
 /**
- * Panel is visible only when the extension is enabled AND not collapsed.
+ * Is a chat open right now? The panel and its launchers belong to the chat
+ * screen only; on the landing page (no chat) they are hidden regardless of the
+ * user's collapsed flag. Derived live from ST on every check, so it is correct
+ * from the very first mount of the session (the old auto-hide only reacted to
+ * a chat->no-chat CHAT_CHANGED, which never happens when ST starts on the
+ * landing page) and it never writes to settings.
+ *
+ * A host context without any chat-identity surface (unit-test stubs) counts
+ * as "chat open" so the plain enabled/collapsed contract still applies there.
+ */
+export function hasOpenChat() {
+    let ctx;
+    try { ctx = getCtx(); } catch { return true; }
+    if (!ctx) return true;
+    if (typeof ctx.getCurrentChatId === 'function') {
+        try { return Boolean(ctx.getCurrentChatId()); } catch { return true; }
+    }
+    if (Object.hasOwn(ctx, 'chatId')) return Boolean(ctx.chatId);
+    return true;
+}
+
+/**
+ * Mirror hasOpenChat() onto <body> as .dsc-no-chat — style.css uses it to hide
+ * the launcher button and the floating icon on the landing page.
+ */
+export function syncChatPresenceClass() {
+    const body = globalThis.document?.body;
+    if (!body?.classList) return;
+    const noChat = !!state.settings.enabled && !hasOpenChat();
+    body.classList.toggle('dsc-no-chat', noChat);
+}
+
+/**
+ * Panel is visible only when the extension is enabled, not collapsed, AND a
+ * chat is open.
  */
 export function isPanelVisible() {
-    return !!state.settings.enabled && !state.settings.collapsed;
+    return !!state.settings.enabled && !state.settings.collapsed && hasOpenChat();
 }
 
 function setVisibilityFromState(bar) {
+    syncChatPresenceClass();
     if (!bar) return;
     const shouldShow = isPanelVisible();
 

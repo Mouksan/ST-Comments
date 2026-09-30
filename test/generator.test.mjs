@@ -17,9 +17,9 @@ import path from 'node:path';
 import { state, bumpGenerationEpoch, dumpDebugLog, clearDebugLog } from '../src/core.js';
 import { setCurrentPost } from '../src/cache.js';
 import { _seedSaveCache, _resetFeedFileStore, getFeedSlot } from '../src/feed-file-store.js';
-import { buildGenerationFingerprint, buildGenerationFingerprintInput } from '../src/lorebooks.js';
+import { buildGenerationFingerprint, buildGenerationFingerprintInput, getChatLoreConfig } from '../src/lorebooks.js';
 import { createSettingsLorebookLifecycle } from '../src/ui/settings-sync.js';
-import { _testBuildChatHistory, _testBuildLoreScanInput, _testGenerateFeed, getCurrentGenerationFingerprint } from '../src/generator.js';
+import { _testBuildChatHistory, _testBuildLoreScanInput, _testBuildPastCommentParts, _testGenerateFeed, getCurrentGenerationFingerprint, loadStylePrompt } from '../src/generator.js';
 
 const ai = (mes, swipe_id = 0, swipes) =>
     swipes ? { mes, is_user: false, is_system: false, is_hidden: false, swipe_id, swipes }
@@ -62,6 +62,215 @@ test('buildChatHistory: includeChatHistory=false returns empty', () => {
     state.settings.includeChatHistory = false;
     globalThis._stCtx.chat = [ai('x', 0)];
     assert.equal(_testBuildChatHistory(0, 0), '');
+});
+
+// ── Community memory: past comment threads in the prompt ──
+
+const threadOf = (...pairs) => pairs.map(([username, content]) => ({ username, content, replyTo: null, replyQuote: null, reactions: [] }));
+
+function seedThread(msgIdx, swipeIdx, messages, { swipeId } = {}) {
+    const msg = globalThis._stCtx.chat[msgIdx];
+    if (swipeId !== undefined) msg.swipe_id = swipeId;
+    _seedSaveCache({ [String(msgIdx)]: { [String(swipeIdx)]: { html: '<p>feed</p>', timestamp: 1, threads: messages } } });
+}
+
+test('buildPastCommentParts: disabled by default returns empty', () => {
+    globalThis._stCtx.chat = [ai('post0', 0), ai('post1', 0)];
+    seedThread(0, 0, threadOf(['nick', 'old comment']));
+    assert.deepEqual(_testBuildPastCommentParts('1'), []);
+});
+
+test('buildPastCommentParts: emits blocks between [Previously] and the anchor, oldest first', async () => {
+    setupGeneration();
+    state.settings = {
+        ...state.settings,
+        includeChatHistory: true,
+        includePastComments: true,
+        pastCommentsDepth: 3,
+    };
+    globalThis._stCtx.chat = [
+        ai('post0', 0),
+        ai('post1', 0),
+        ai('post2', 0),
+        ai('ANCHOR_POST', 0),
+    ];
+    seedThread(0, 0, threadOf(['oldest_fan', 'COMMENT_THREAD_0']));
+    seedThread(1, 0, threadOf(['regular', 'COMMENT_THREAD_1']));
+    seedThread(2, 0, threadOf(['regular', 'COMMENT_THREAD_2']));
+    seedThread(3, 0, threadOf(['someone', 'ANCHOR_FEED_NOT_INCLUDED']));
+
+    let userMessages = null;
+    await _testGenerateFeed('3', 0, true, async (_system, user) => { userMessages = user; return validResponse; });
+
+    const previouslyIdx = userMessages.findIndex(m => m.startsWith('[Previously'));
+    const anchorIdx = userMessages.findIndex(m => m.startsWith('[Current chapter'));
+    const threadIdxs = userMessages.reduce((acc, m, i) => (m.startsWith('[Reader comments') ? [...acc, i] : acc), []);
+    assert.equal(threadIdxs.length, 3, 'three past threads included');
+    assert.ok(threadIdxs.every(i => i > previouslyIdx && i < anchorIdx), 'threads sit between [Previously] and the anchor');
+    assert.match(userMessages[threadIdxs[0]], /COMMENT_THREAD_0/, 'oldest thread first');
+    assert.match(userMessages[threadIdxs[1]], /COMMENT_THREAD_1/);
+    assert.match(userMessages[threadIdxs[2]], /COMMENT_THREAD_2/);
+    // Anchor's own thread must never be quoted (regenerating post N must not quote post N).
+    for (const i of threadIdxs) assert.ok(!userMessages[i].includes('ANCHOR_FEED_NOT_INCLUDED'));
+    // The newest included thread is framed as "the previous chapter".
+    assert.match(userMessages[threadIdxs[2]], /\[Reader comments on the previous chapter/);
+    assert.match(userMessages[threadIdxs[0]], /\[Reader comments on an earlier chapter/);
+});
+
+test('buildPastCommentParts: only the ACTIVE swipe of a past post is quoted (side swipes excluded)', () => {
+    globalThis._stCtx.chat = [
+        { mes: 'active swipe text', is_user: false, is_system: false, is_hidden: false, swipe_id: 1, swipes: ['side swipe', 'active swipe text'] },
+        ai('anchor', 0),
+    ];
+    _seedSaveCache({
+        0: {
+            0: { html: '<p>side feed</p>', timestamp: 1, threads: threadOf(['sider', 'SIDE_SWIPE_COMMENT']) },
+            1: { html: '<p>active feed</p>', timestamp: 1, threads: threadOf(['active_fan', 'ACTIVE_SWIPE_COMMENT']) },
+        },
+    });
+    state.settings = { includePastComments: true, pastCommentsDepth: 2 };
+
+    const parts = _testBuildPastCommentParts('1');
+    assert.equal(parts.length, 1);
+    assert.match(parts[0], /ACTIVE_SWIPE_COMMENT/);
+    assert.ok(!parts[0].includes('SIDE_SWIPE_COMMENT'), 'the inactive swipe thread must not reach the prompt');
+});
+
+test('buildPastCommentParts: depth caps the count, missing threads do not spend the budget', () => {
+    globalThis._stCtx.chat = [ai('p0', 0), ai('p1', 0), ai('p2', 0), ai('p3', 0), ai('anchor', 0)];
+    seedThread(0, 0, threadOf(['a', 'THREAD_0']));
+    seedThread(2, 0, threadOf(['b', 'THREAD_2']));   // post 1 has no cached thread
+    state.settings = { includePastComments: true, pastCommentsDepth: 2 };
+
+    const parts = _testBuildPastCommentParts('4');
+    assert.equal(parts.length, 2, 'depth=2, and the gap post does not consume the budget');
+    assert.match(parts[0], /THREAD_0/);
+    assert.match(parts[1], /THREAD_2/);
+});
+
+test('buildPastCommentParts: noSaveMode disables the feature', () => {
+    globalThis._stCtx.chat = [ai('p0', 0), ai('anchor', 0)];
+    seedThread(0, 0, threadOf(['a', 'THREAD_0']));
+    state.settings = { includePastComments: true, pastCommentsDepth: 2, noSaveMode: true };
+    assert.deepEqual(_testBuildPastCommentParts('1'), []);
+});
+
+test('buildPastCommentParts: legacy entries without threads are skipped silently', () => {
+    globalThis._stCtx.chat = [ai('p0', 0), ai('anchor', 0)];
+    _seedSaveCache({ 0: { 0: { html: '<p>old feed</p>', timestamp: 1 } } });
+    state.settings = { includePastComments: true, pastCommentsDepth: 2 };
+    assert.deepEqual(_testBuildPastCommentParts('1'), []);
+});
+
+test('thread serialization: replies render as @nick (replying to @target, "quote") and multiline collapses', () => {
+    globalThis._stCtx.chat = [ai('p0', 0), ai('anchor', 0)];
+    seedThread(0, 0, [
+        { username: 'coder_42', content: 'multi\nline\ncontent', replyTo: null, replyQuote: null, reactions: [] },
+        { username: 'ghost_reader', content: 'SAME.', replyTo: 'coder_42', replyQuote: 'line content', reactions: [] },
+        { username: '', content: 'dropped, no username', replyTo: null, replyQuote: null, reactions: [] },
+    ]);
+    state.settings = { includePastComments: true, pastCommentsDepth: 2 };
+
+    const parts = _testBuildPastCommentParts('1');
+    assert.equal(parts.length, 1);
+    assert.match(parts[0], /@coder_42: multi \/ line \/ content/);
+    assert.match(parts[0], /@ghost_reader \(replying to @coder_42, "line content"\): SAME\./);
+    assert.ok(!parts[0].includes('dropped'));
+});
+
+test('thread serialization: per-thread char budget keeps the newest comments', () => {
+    globalThis._stCtx.chat = [ai('p0', 0), ai('anchor', 0)];
+    seedThread(0, 0, [
+        { username: 'early', content: 'EARLY_'.repeat(400), replyTo: null, replyQuote: null, reactions: [] },   // ~2400 chars — alone over budget
+        { username: 'mid', content: 'MID_'.repeat(400), replyTo: null, replyQuote: null, reactions: [] },       // ~2000 chars
+        { username: 'late', content: 'LATE_SMALL', replyTo: null, replyQuote: null, reactions: [] },
+    ]);
+    state.settings = { includePastComments: true, pastCommentsDepth: 2 };
+
+    const parts = _testBuildPastCommentParts('1');
+    assert.match(parts[0], /LATE_SMALL/, 'the newest comment always survives');
+    assert.ok(!parts[0].includes('EARLY_'), 'oldest oversized comments are trimmed first');
+});
+
+test('buildPastCommentParts: a thread of only oversized comments yields no empty block', () => {
+    globalThis._stCtx.chat = [ai('p0', 0), ai('anchor', 0)];
+    seedThread(0, 0, [
+        { username: 'wall', content: 'WALL_'.repeat(500), replyTo: null, replyQuote: null, reactions: [] },   // ~3000 chars — over budget alone
+        { username: 'wall2', content: 'WALL2_'.repeat(500), replyTo: null, replyQuote: null, reactions: [] },
+    ]);
+    state.settings = { includePastComments: true, pastCommentsDepth: 2 };
+
+    assert.deepEqual(_testBuildPastCommentParts('1'), [], 'an unusable thread must not emit a header-only block');
+});
+
+test('buildPastCommentParts: unusable previous-chapter thread leaves only earlier framing', () => {
+    globalThis._stCtx.chat = [ai('p0', 0), ai('p1', 0), ai('anchor', 0)];
+    seedThread(0, 0, threadOf(['a', 'THREAD_OK']));
+    seedThread(1, 0, [
+        { username: 'wall', content: 'WALL_'.repeat(500), replyTo: null, replyQuote: null, reactions: [] },
+    ]);
+    state.settings = { includePastComments: true, pastCommentsDepth: 3 };
+
+    const parts = _testBuildPastCommentParts('2');
+    assert.equal(parts.length, 1, 'only the usable thread survives');
+    assert.match(parts[0], /THREAD_OK/);
+    assert.ok(parts[0].includes('an earlier chapter'), 'framing stays anchored to the surviving thread');
+    assert.ok(!parts[0].includes('the previous chapter'), 'the dropped previous-chapter thread must not reframe the older one');
+});
+
+test('generateFeed stores the parsed thread with the feed entry (saveMode)', async () => {
+    setupGeneration();
+    await _testGenerateFeed('1', 0, true, async () => JSON.stringify([
+        { username: 'stored_nick', content: 'stored content', reactions: [] },
+    ]));
+    const entry = getFeedSlot('1', 0);
+    assert.equal(entry?.threads?.length, 1);
+    assert.equal(entry.threads[0].username, 'stored_nick');
+    assert.equal(entry.threads[0].content, 'stored content');
+});
+
+test('fingerprint changes when an included past thread changes (community memory is a prompt input)', async () => {
+    setupGeneration();
+    state.settings = {
+        ...state.settings,
+        includeChatHistory: false,
+        includePastComments: true,
+        pastCommentsDepth: 3,
+    };
+    globalThis._stCtx.chat = [ai('p0', 0), ai('anchor', 0)];
+    seedThread(0, 0, threadOf(['a', 'THREAD_V1']));
+
+    let fpV1 = '';
+    await _testGenerateFeed('1', 0, true, async () => validResponse);
+    fpV1 = getFeedSlot('1', 0)?.generationFp;
+    assert.match(fpV1, /^v1-/);
+
+    // Regenerate the PAST post's feed: the anchor's fp must change so its
+    // cached feed becomes soft-stale instead of pretending the context is same.
+    seedThread(0, 0, threadOf(['a', 'THREAD_V2']));
+    await _testGenerateFeed('1', 0, true, async () => validResponse);
+    const fpV2 = getFeedSlot('1', 0)?.generationFp;
+    assert.notEqual(fpV2, fpV1, 'changed past-thread content must change the anchor generation fp');
+
+    // Restore the original thread → fp returns to the original value.
+    seedThread(0, 0, threadOf(['a', 'THREAD_V1']));
+    await _testGenerateFeed('1', 0, true, async () => validResponse);
+    assert.equal(getFeedSlot('1', 0)?.generationFp, fpV1);
+});
+
+test('feature off: fp stays byte-identical to the pre-feature fp', async () => {
+    setupGeneration();
+    state.settings = { ...state.settings, includePastComments: false };
+
+    // Expected fp built exactly as the pre-feature code built it — same
+    // resolved lore config path (getChatLoreConfig) as the generator uses.
+    const expected = buildGenerationFingerprint(buildGenerationFingerprintInput({
+        settings: state.settings,
+        loreConfig: getChatLoreConfig(globalThis._stCtx),
+        stylePrompt: 'Generate {{count}} comments.',
+    }));
+    const actual = await getCurrentGenerationFingerprint(globalThis._stCtx, '1');
+    assert.equal(actual, expected, 'with the feature off the fp must not diverge from the historical formula');
 });
 
 test('current generation fingerprint uses generator inputs without loading lore entries', async () => {
@@ -176,8 +385,7 @@ function setupGeneration({ loreConfig, cachedGenerationFp } = {}) {
         dscomments_commentary: { posts: {}, current: { msgId: null, swipeIdx: 0 } },
     };
     globalThis._stCtx.saveMetadata = () => {};
-    globalThis.SillyTavern.libs.localforage.getItem = async key =>
-        key === 'DSComments_prompts' ? { main: 'Generate {{count}} comments.' } : null;
+    state.settings.promptTemplates = { main: 'Generate {{count}} comments.' };
     state.generationEpoch = 0;
     state.generationInProgress = false;
     state.generationOwner = null;
@@ -588,10 +796,14 @@ test('generateFeed: epoch change during style load skips matching cache access a
     });
     const originalTimestamp = getFeedSlot('1', 0)?.ts;
 
+    // Style load is synchronous for settings-backed templates; the remaining
+    // async seam is the builtin fetch. Hold it to simulate a slow load.
+    delete state.settings.promptTemplates;
     let resolveStyle;
     let styleLoadStarted = false;
-    globalThis.SillyTavern.libs.localforage.getItem = key => {
-        if (key !== 'DSComments_prompts') return Promise.resolve(null);
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (url) => {
+        if (!String(url).includes('/chat-styles/main.md')) return origFetch(url);
         styleLoadStarted = true;
         return new Promise(resolve => { resolveStyle = resolve; });
     };
@@ -601,14 +813,18 @@ test('generateFeed: epoch change during style load skips matching cache access a
         return validResponse;
     });
 
-    while (!styleLoadStarted) await new Promise(resolve => setImmediate(resolve));
-    bumpGenerationEpoch();
-    resolveStyle({ main: 'Generate {{count}} comments.' });
-    await genPromise;
+    try {
+        while (!styleLoadStarted) await new Promise(resolve => setImmediate(resolve));
+        bumpGenerationEpoch();
+        resolveStyle({ ok: true, status: 200, text: async () => 'Generate {{count}} comments.' });
+        await genPromise;
 
-    assert.equal(getFeedSlot('1', 0)?.ts, originalTimestamp, 'stale generation must not access matching cache');
-    assert.notEqual(view.feedHtml, '<p>cached</p>', 'stale generation must not render matching cache');
-    assert.equal(apiCalls, 0);
+        assert.equal(getFeedSlot('1', 0)?.ts, originalTimestamp, 'stale generation must not access matching cache');
+        assert.notEqual(view.feedHtml, '<p>cached</p>', 'stale generation must not render matching cache');
+        assert.equal(apiCalls, 0);
+    } finally {
+        globalThis.fetch = origFetch;
+    }
 });
 
 test('generateFeed: a result completed after CHAT_CHANGED is NOT stored (stale discard)', async () => {
@@ -628,8 +844,7 @@ test('generateFeed: a result completed after CHAT_CHANGED is NOT stored (stale d
     globalThis._stCtx.chatId = 'chatA';
     globalThis._stCtx.chatMetadata = { dscomments_commentary: { posts: {}, current: { msgId: null, swipeIdx: 0 } } };
     globalThis._stCtx.saveMetadata = () => {};
-    globalThis.SillyTavern.libs.localforage.getItem = async (key) =>
-        key === 'DSComments_prompts' ? { main: 'Generate {{count}} comments.' } : null;
+    state.settings.promptTemplates = { main: 'Generate {{count}} comments.' };
     state.generationEpoch = 0;
 
     // Fake API: resolves with valid model output, but only AFTER we bump the epoch.
@@ -695,8 +910,7 @@ test('generateFeed: chat-change abort discards the result and clears the launche
     globalThis._stCtx.chatId = 'chatA';
     globalThis._stCtx.chatMetadata = { dscomments_commentary: { posts: {}, current: { msgId: null, swipeIdx: 0 } } };
     globalThis._stCtx.saveMetadata = () => {};
-    globalThis.SillyTavern.libs.localforage.getItem = async (key) =>
-        key === 'DSComments_prompts' ? { main: 'Generate {{count}} comments.' } : null;
+    state.settings.promptTemplates = { main: 'Generate {{count}} comments.' };
     state.generationEpoch = 0;
 
     let rejectApi;
@@ -802,8 +1016,7 @@ test('generateFeed: a result completed in the same epoch IS stored', async () =>
     globalThis._stCtx.chatId = 'chatA';
     globalThis._stCtx.chatMetadata = { dscomments_commentary: { posts: {}, current: { msgId: null, swipeIdx: 0 } } };
     globalThis._stCtx.saveMetadata = () => {};
-    globalThis.SillyTavern.libs.localforage.getItem = async (key) =>
-        key === 'DSComments_prompts' ? { main: 'Generate {{count}} comments.' } : null;
+    state.settings.promptTemplates = { main: 'Generate {{count}} comments.' };
     state.generationEpoch = 0;
 
     const fakeApi = async () => JSON.stringify([
@@ -895,4 +1108,31 @@ test('F10: finally does not lower a higher navLockUntil set by the restore path'
 
     assert.ok(state.navLockUntil >= restoreLock,
         `finally must not lower the lock: got ${state.navLockUntil}, restore set ${restoreLock}`);
+});
+
+// ── loadStylePrompt: transient fallback must not rewrite the selection ──
+// Historical bug: a template name missing from this browser's store made the
+// generator persist promptTemplate='main', destroying the user's choice
+// (the template could exist in another browser and reappear later).
+
+test('loadStylePrompt: missing user template falls back to main TRANSIENTLY (no settings write)', async () => {
+    state.settings.promptTemplate = 'my_vibe';
+    globalThis.SillyTavern.libs.localforage.getItem = async () => ({});
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (url) => {
+        const u = String(url);
+        if (u.includes('/chat-styles/my_vibe.md')) return { ok: false, status: 404, text: async () => '' };
+        if (u.includes('/chat-styles/main.md')) return { ok: true, status: 200, text: async () => 'MAIN_VIBE_TEXT' };
+        return origFetch(url);
+    };
+    try {
+        const text = await loadStylePrompt();
+        // The exact vibe may come from the module's builtin cache (populated by
+        // earlier tests), so assert the contract, not the string.
+        assert.equal(typeof text, 'string');
+        assert.ok(text.length > 0, 'generation gets a builtin main vibe');
+        assert.equal(state.settings.promptTemplate, 'my_vibe', 'selection must not be rewritten');
+    } finally {
+        globalThis.fetch = origFetch;
+    }
 });

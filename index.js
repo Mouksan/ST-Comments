@@ -28,6 +28,7 @@ import { playNotificationSound, initSoundKeyCounter, addCustomSound, migrateCust
 import { deleteUserFile } from './src/user-files.js';
 import {
     mountPanel, removePanel, isPanelVisible, syncPanelVisibility, initViewportSync, teardownWindowRuntime, isMobileViewport,
+    syncChatPresenceClass,
 } from './src/ui/window.js';
 import { ensureFloatingLauncher, removeFloatingLauncher } from './src/ui/floating-launcher.js';
 import {
@@ -38,6 +39,7 @@ import {
     syncDomFromState, syncPanelVisibility as syncSettingsSections, FIELD_MAP,
     applyFontSize, applyFontFamily, populateProfiles,
     syncPromptEditor, loadPromptContent, savePromptContent, savePromptAs, deletePrompt, resetPromptToBuiltin,
+    migrateTemplatesFromLocalforage,
     syncNumericInput, createSettingsLorebookLifecycle,
 } from './src/ui/settings-sync.js';
 import { createLorebookPicker } from './src/ui/lorebook-picker.js';
@@ -114,6 +116,16 @@ export async function onClean() {
             saveSettings();
         }
     } catch (e) { error('custom sound cleanup error:', e); }
+    // Prompt templates live in extension settings now; Clean wipes them too —
+    // same semantics as the localforage era (USER_GUIDE documents Clean as
+    // removing templates). The selection falls back to the builtin 'main'.
+    try {
+        state.settings.promptTemplates = {};
+        if (state.settings.promptTemplate && state.settings.promptTemplate !== 'main') {
+            state.settings.promptTemplate = 'main';
+        }
+        saveSettings();
+    } catch (e) { error('prompt templates cleanup error:', e); }
     // Parallel removal: ST's callExtensionHook races every hook against a 5s
     // timeout (extensions.js HOOK_TIMEOUT). A sequenced `await removeItem`
     // loop over many custom sounds can exceed that on slow devices (Termux),
@@ -213,6 +225,12 @@ async function init(isCancelled) {
     const migratedSounds = await migrateCustomSoundsToServer();
     if (isCancelled()) return;
     if (migratedSounds) trace(`sound: migrated ${migratedSounds} custom sound(s) to server storage`);
+    // Lift legacy browser-local prompt templates (localforage) into the
+    // settings store so they survive device/browser changes. Must run BEFORE
+    // the settings panel / prompt editor mount (they read promptTemplates).
+    const migratedTemplates = await migrateTemplatesFromLocalforage();
+    if (isCancelled()) return;
+    if (migratedTemplates) trace(`promptTemplates: migrated ${migratedTemplates} template(s) to settings storage`);
 
     if (!_settingsPanelLoaded) {
         try {
@@ -277,7 +295,7 @@ async function init(isCancelled) {
     bindEvents(generateFeed, undefined, {
         getGenerationFingerprint: getCurrentGenerationFingerprint,
         onChatChanged: () => refreshLorebookPicker(),
-        onPanelCollapseChanged: applyCollapseState,
+        onChatPresenceChanged: applyChatPresence,
     });
     initLifecycle({ generateFeed, getCachedPostForCurrentGeneration, storeFeed, showCurrentFeed, syncRegenVisual });
     initFeedController({ generateFeed });
@@ -429,9 +447,11 @@ export function ensureLauncher() {
     if (!state.settings.enabled) {
         if (existing) existing.remove();
         document.body.classList.remove('dsc-launcher-mounted');
+        document.body.classList.remove('dsc-no-chat');
         removeFloatingLauncher();
         return null;
     }
+    syncChatPresenceClass();   // launchers are hidden on the landing page (style.css)
     const mode = state.settings.launcherMode || 'bar';
     const wantBar = mode === 'bar' || mode === 'both';
     const wantFab = mode === 'floating' || mode === 'both';
@@ -474,25 +494,24 @@ export function ensureLauncher() {
  * `enabled` (that's the power button / checkbox's job).
  */
 /**
- * Apply state.settings.collapsed that was flipped elsewhere (the auto-hide on
- * leaving/entering a chat). Mirrors toggleLauncherPanel's side effects without
- * flipping the flag again.
+ * Re-apply visibility after a chat was opened/closed (CHAT_CHANGED). The panel
+ * and launchers are shown only inside a chat — see hasOpenChat() in window.js.
+ * Does not touch or save state.settings.collapsed: the user's own collapse
+ * survives landing-page visits and reloads. Observer start in a chat is owned
+ * by the CHAT_CHANGED handler's scheduled restart; here we only stop it when
+ * the panel went away.
  */
-function applyCollapseState() {
+function applyChatPresence() {
     if (!state.settings.enabled) return;
-    saveSettings();
     syncPanelVisibility();
     ensureLauncher();
-    if (state.settings.collapsed) disconnectObservers();
-    else initPostScrollObserver();
+    if (!isPanelVisible()) disconnectObservers();
 }
 
 async function toggleLauncherPanel() {
     if (!state.settings.enabled) return;
     const panelToken = beginPanelLifecycleTransition();
     state.settings.collapsed = !state.settings.collapsed;
-    // Any manual toggle takes ownership away from the auto-hide.
-    state.autoCollapsed = false;
     saveSettings();
     mountPanel();                       // ensure DOM exists (idempotent)
     syncPanelVisibility();              // apply new collapsed state
@@ -612,6 +631,7 @@ function bindSettingsPanelEvents() {
 
         // Section visibility follow-ups
         if (el.id === 'dsc_hist') syncSettingsSections();
+        if (el.id === 'dsc_pastcom') syncSettingsSections();
         if (el.id === 'dsc_jb_enable') syncSettingsSections();
         if (el.id === 'dsc_sound_enable') {
             document.getElementById('dsc_sound_body').hidden = !el.checked;
