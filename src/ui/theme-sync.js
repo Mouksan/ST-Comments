@@ -24,9 +24,14 @@
  *
  * Contract: idempotent init/teardown, mirroring window.js. Pure color helpers
  * are exported under a NODE_TEST guard for unit testing without a DOM.
+ *
+ * Color schemes (fork addition, see color-schemes.js): with the 'native' scheme
+ * everything works as described above. Any other scheme writes its fixed
+ * palette instead and ignores ST theme changes.
  */
 
-import { debounce, warn } from '../core.js';
+import { debounce, warn, state } from '../core.js';
+import { resolveScheme } from './color-schemes.js';
 
 // ── Module-owned runtime handles (teardown targets) ──
 let _observer = null;
@@ -35,7 +40,10 @@ let _bound = false;
 
 // Tokens we own on :root. teardown removes exactly these so the CSS fallbacks
 // (relative-color @supports / raw tint) take over again.
-const OWNED_TOKENS = ['--dsc-bg', '--dsc-overlay-bg', '--dsc-color-scheme'];
+const OWNED_TOKENS = ['--dsc-bg', '--dsc-overlay-bg', '--dsc-color-scheme', '--dsc-text', '--dsc-accent', '--dsc-border'];
+// Written only by independent schemes. On 'native' they are removed so the
+// style.css defaults (var(--SmartTheme*)) apply again.
+const SCHEME_ONLY_TOKENS = ['--dsc-text', '--dsc-accent', '--dsc-border'];
 
 /**
  * Parse a CSS `rgb()` / `rgba()` color string into channels.
@@ -120,20 +128,60 @@ export function computeTokens(tintRaw, bodyRaw) {
     return { bg, overlayBg, colorScheme: themeIsLight ? 'light' : 'dark' };
 }
 
-/** Read the live theme tokens and push derived tokens onto :root. */
+/**
+ * Write a token only when it actually changes. Our own writes mutate <html
+ * style>, which the observer below listens to — skipping no-op writes keeps
+ * that from turning into a feedback loop.
+ * @param {CSSStyleDeclaration} style
+ * @param {string} name
+ * @param {string} value
+ */
+function setToken(style, name, value) {
+    if (style.getPropertyValue(name).trim() !== value) style.setProperty(name, value);
+}
+
+/** @param {CSSStyleDeclaration} style @param {string} name */
+function removeToken(style, name) {
+    if (style.getPropertyValue(name) !== '') style.removeProperty(name);
+}
+
+/** Read the live theme tokens (or the chosen scheme) and push tokens onto :root. */
 function applyTokens() {
     try {
-        const cs = getComputedStyle(document.documentElement);
+        const root = document.documentElement;
+        const scheme = resolveScheme(state.settings?.colorScheme, state.settings?.customColor);
+        if (scheme) {
+            // Independent scheme: fixed palette, ST theme ignored. All
+            // ported palettes are dark, so native form chrome stays dark.
+            setToken(root.style, '--dsc-bg', scheme.bg);
+            setToken(root.style, '--dsc-overlay-bg', scheme.overlay);
+            setToken(root.style, '--dsc-color-scheme', 'dark');
+            setToken(root.style, '--dsc-text', scheme.text);
+            setToken(root.style, '--dsc-accent', scheme.accent);
+            setToken(root.style, '--dsc-border', scheme.border);
+            return;
+        }
+        for (const token of SCHEME_ONLY_TOKENS) removeToken(root.style, token);
+        const cs = getComputedStyle(root);
         const tintRaw = cs.getPropertyValue('--SmartThemeBlurTintColor').trim();
         const bodyRaw = cs.getPropertyValue('--SmartThemeBodyColor').trim();
         const { bg, overlayBg, colorScheme } = computeTokens(tintRaw, bodyRaw);
-        const root = document.documentElement;
-        root.style.setProperty('--dsc-bg', bg);
-        root.style.setProperty('--dsc-overlay-bg', overlayBg);
-        root.style.setProperty('--dsc-color-scheme', colorScheme);
+        setToken(root.style, '--dsc-bg', bg);
+        setToken(root.style, '--dsc-overlay-bg', overlayBg);
+        setToken(root.style, '--dsc-color-scheme', colorScheme);
     } catch (e) {
         warn('theme-sync: failed to apply tokens:', e);
     }
+}
+
+/**
+ * Re-apply tokens right now (after the user picks a scheme or drags the custom
+ * color). No-op while theme sync is torn down (extension disabled).
+ */
+export function refreshThemeTokens() {
+    if (!_bound) return;
+    _recompute?.cancel?.();
+    applyTokens();
 }
 
 /**

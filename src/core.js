@@ -1,5 +1,7 @@
 // @ts-check
 
+import { isKnownScheme, isHexColor, DEFAULT_CUSTOM_COLOR } from './ui/color-schemes.js';
+
 export const MODULE_NAME = 'dscomments';
 export const DISPLAY_NAME = 'DS Comments';
 
@@ -51,6 +53,11 @@ export const defaultSettings = Object.freeze({
     userCount: 5,                     // → {{count}}
     fontFamily: 'system',
     fontSize: 15,
+
+    // color scheme (src/ui/color-schemes.js): 'native' follows the ST theme,
+    // the rest are fixed palettes; 'custom' derives one from customColor.
+    colorScheme: 'native',
+    customColor: DEFAULT_CUSTOM_COLOR,
 
     // context assembly toggles
     includeChatHistory: true,
@@ -398,6 +405,12 @@ export async function loadSettings() {
     }
     if (!['bar', 'floating', 'both'].includes(state.settings.launcherMode)) {
         state.settings.launcherMode = defaultSettings.launcherMode;
+    }
+    if (!isKnownScheme(state.settings.colorScheme)) {
+        state.settings.colorScheme = defaultSettings.colorScheme;
+    }
+    if (!isHexColor(state.settings.customColor)) {
+        state.settings.customColor = defaultSettings.customColor;
     }
     if (!state.settings.soundFiles) state.settings.soundFiles = {};
     if (!state.settings.soundId) state.settings.soundId = 'default';

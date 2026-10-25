@@ -117,6 +117,24 @@
                 </select>
             </div>
             <div class="dsc_field_group">
+                <span class="dsc_field_label"><i class="fa-solid fa-palette fa-fw"></i> <span data-i18n="dscomments.settings.colorScheme">Color scheme</span></span>
+                <select id="dsc_color_scheme" class="dsc_select">
+                    <option value="native" data-i18n="dscomments.scheme.native">SillyTavern</option>
+                    <option value="ash" data-i18n="dscomments.scheme.ash">Ash</option>
+                    <option value="plum" data-i18n="dscomments.scheme.plum">Plum</option>
+                    <option value="wine" data-i18n="dscomments.scheme.wine">Wine</option>
+                    <option value="frost" data-i18n="dscomments.scheme.frost">Frost</option>
+                    <option value="ink" data-i18n="dscomments.scheme.ink">Ink</option>
+                    <option value="custom" data-i18n="dscomments.scheme.custom">Custom color</option>
+                </select>
+                <small class="dsc_hint dsc_scheme_hint" data-i18n="dscomments.settings.colorSchemeHint">"SillyTavern" follows your SillyTavern theme. The other schemes are independent and override it.</small>
+                <div class="dsc_custom_color_row" id="dsc_custom_color_group" hidden>
+                    <span class="dsc_field_label"><span data-i18n="dscomments.settings.customColor">Custom color</span>
+                        <small class="dsc_hint" data-i18n="dscomments.settings.customColorHint">Background and borders are derived from it.</small></span>
+                    <input type="color" id="dsc_custom_color" class="dsc_color_input" value="#a98bd6">
+                </div>
+            </div>
+            <div class="dsc_field_group">
                 <span class="dsc_field_label"><i class="fa-solid fa-list-check fa-fw"></i> <span data-i18n="dscomments.settings.context">Context</span></span>
                 <label class="dsc_toggle_row"><input type="checkbox" id="dsc_hist" class="checkbox"> <span data-i18n="dscomments.settings.history">Chat history</span></label>
                 <div id="dsc_depth_group" hidden>
@@ -218,4 +236,4 @@
     </div>
 
     <p class="dsc_version" style="text-align:center;opacity:0.4;font-size:0.8em;padding:8px">DS Comments v0.10.0</p>
-</div>
+</div>

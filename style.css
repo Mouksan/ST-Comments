@@ -358,8 +358,8 @@
 .dsc_nav_select {
     width: 100%; padding: 8px 10px; border-radius: 7px;
     background: var(--dsc-overlay-bg);
-    color: var(--SmartThemeBodyColor, var(--dsc-text));
-    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.15));
+    color: var(--dsc-text);
+    border: 1px solid var(--dsc-border);
     font-size: 0.92em;
     min-height: 38px;
     color-scheme: var(--dsc-color-scheme);
@@ -367,7 +367,7 @@
 }
 .dsc_nav_select option {
     background: var(--dsc-overlay-bg);
-    color: var(--SmartThemeBodyColor, #dcddde);
+    color: var(--dsc-text);
 }
 .dsc_chips { display: flex; flex-wrap: wrap; gap: 5px; padding: 2px 6px; }
 .dsc_chip {
@@ -412,8 +412,18 @@
     border: 1px solid var(--dsc-border);
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
     color: var(--dsc-text); font-size: 0.88em;
+    /* The color-scheme chips make the popover taller — scroll instead of
+       spilling past the mobile max-height set in typography.js. */
+    overflow-y: auto; scrollbar-width: thin;
 }
 .dsc_pop_group { padding: 2px 4px; }
+/* Color-scheme chips: accent swatch before the name. */
+.dsc_scheme_chip { display: inline-flex; align-items: center; gap: 6px; }
+.dsc_chip_swatch {
+    width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto;
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.25);
+}
+.dsc_chip.dsc_selected .dsc_chip_swatch { box-shadow: 0 0 0 1.5px #fff; }
 .dsc_pop_label { font-size: 0.78em; font-weight: 600; opacity: 0.6; padding: 4px 8px; }
 .dsc_pop_divider { height: 1px; background: rgba(255, 255, 255, 0.08); margin: 6px 8px; }
 
@@ -484,6 +494,24 @@
 @media (prefers-reduced-motion: reduce) { .dsc_fab.dsc_generating { animation: none; opacity: 0.8; will-change: auto; } }
 
 /* ── Settings panel (ST extensions_settings) ── */
+/* The drawer stays in the SillyTavern theme even when an independent color
+   scheme repaints the comments window (scheme tokens live on :root). */
+.dsc_settings {
+    --dsc-text:   var(--SmartThemeBodyColor, #dcddde);
+    --dsc-accent: var(--SmartThemeQuoteColor, #43b581);
+    --dsc-border: var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.15));
+}
+/* Custom color row: label on the left, picker on the right. */
+.dsc_custom_color_row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.dsc_custom_color_row .dsc_field_label { flex: 1 1 auto; min-width: 0; margin-bottom: 0; }
+.dsc_custom_color_row .dsc_hint { display: block; font-weight: 400; }
+.dsc_scheme_hint { display: block; margin-top: 5px; font-size: 0.8em; opacity: 0.6; line-height: 1.35; }
+.dsc_color_input {
+    flex: 0 0 auto; width: 44px; height: 30px; padding: 2px;
+    border-radius: 7px; cursor: pointer;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+}
 .dsc_settings .dsc_section {
     border-top: 1px solid rgba(255, 255, 255, 0.06);
     margin: 0;

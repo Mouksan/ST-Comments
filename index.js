@@ -41,6 +41,7 @@ import {
     syncPromptEditor, loadPromptContent, savePromptContent, savePromptAs, deletePrompt, resetPromptToBuiltin,
     migrateTemplatesFromLocalforage,
     syncNumericInput, createSettingsLorebookLifecycle,
+    setColorScheme, setCustomColor,
 } from './src/ui/settings-sync.js';
 import { createLorebookPicker } from './src/ui/lorebook-picker.js';
 import { getChatLoreConfig, saveChatLoreConfig } from './src/lorebooks.js';
@@ -597,6 +598,8 @@ function bindSettingsPanelEvents() {
         const cfg = FIELD_MAP[el.id];
         if (!cfg) return;
         if (el.id === 'dsc_apikey') { flushApiKey(); return; }
+        if (el.id === 'dsc_color_scheme') { setColorScheme(el.value); return; }
+        if (el.id === 'dsc_custom_color') { setCustomColor(el.value); return; }
         if (el.id === 'dsc_template') {
             state.settings.promptTemplate = el.value;
             saveSettings();
@@ -649,6 +652,10 @@ function bindSettingsPanelEvents() {
         const cfg = FIELD_MAP[el.id];
         if (!cfg) return;
         if (el.id === 'dsc_apikey') { setApiKey(el.value); return; }
+        // Color scheme: the select is handled on change; the picker repaints
+        // live while dragging and is saved once on change.
+        if (el.id === 'dsc_color_scheme') return;
+        if (el.id === 'dsc_custom_color') { setCustomColor(el.value, { live: true }); return; }
         // Not saved on every keystroke: dsc_template_text is saved by the Save
         // button, dsc_jb_text by a change event on blur through the common
         // FIELD_MAP path below.

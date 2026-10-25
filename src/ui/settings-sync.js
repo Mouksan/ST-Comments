@@ -7,6 +7,8 @@
 
 import { state, getCtx, BASE_URL, saveSettings, escapeHtml, getApiKey, setApiKey, DSC_FONTS, LF_PROMPTS, log, warn, NUMERIC_SETTINGS, normalizeFiniteNumber, tr } from '../core.js';
 import { getProfiles, getProfileDetails } from '../connection.js';
+import { refreshThemeTokens } from './theme-sync.js';
+import { isKnownScheme, isHexColor } from './color-schemes.js';
 
 // ── Settings field map: settings.html id → state prop + input type ──
 const FIELD_MAP = {
@@ -28,6 +30,8 @@ const FIELD_MAP = {
     dsc_fontfam:        { prop: 'fontFamily',                  type: 'select' },
     dsc_fontsize:       { prop: 'fontSize',                    type: 'number' },
     dsc_launcher_mode:  { prop: 'launcherMode',                type: 'select' },
+    dsc_color_scheme:   { prop: 'colorScheme',                 type: 'select' },
+    dsc_custom_color:   { prop: 'customColor',                 type: 'color' },
     dsc_template:       { prop: 'promptTemplate',              type: 'select' },
     dsc_jb_enable:      { prop: 'enableJailbreakBlock',        type: 'checkbox' },
     dsc_jb_role:        { prop: 'jailbreakRole',               type: 'select' },
@@ -127,7 +131,44 @@ export function syncPanelVisibility() {
     // Sound body: on load unhide it when sound is enabled, otherwise the slider/
     // list/test button stay invisible even though the checkbox is checked.
     updateSoundVisibility();
+    updateCustomColorVisibility();
     syncPromptEditor();
+}
+
+// ── Color scheme (fork addition, see color-schemes.js) ──
+
+/** Custom-color picker row is visible only with the 'custom' scheme. */
+export function updateCustomColorVisibility() {
+    const el = document.getElementById('dsc_custom_color_group');
+    if (el) el.hidden = state.settings.colorScheme !== 'custom';
+}
+
+/**
+ * Switch the scheme from anywhere (settings select or Aa popover chips):
+ * state → save → repaint → keep the settings select in sync.
+ * @param {string} id
+ */
+export function setColorScheme(id) {
+    if (!isKnownScheme(id)) return;
+    state.settings.colorScheme = id;
+    saveSettings();
+    refreshThemeTokens();
+    const select = /** @type {HTMLSelectElement|null} */ (document.getElementById('dsc_color_scheme'));
+    if (select && select.value !== id) select.value = id;
+    updateCustomColorVisibility();
+}
+
+/**
+ * Custom color from the picker. Live drag repaints without saving; the final
+ * value (change event) is saved.
+ * @param {string} color
+ * @param {{live?: boolean}} [opts]
+ */
+export function setCustomColor(color, { live = false } = {}) {
+    if (!isHexColor(color)) return;
+    state.settings.customColor = color;
+    refreshThemeTokens();
+    if (!live) saveSettings();
 }
 
 // ── Font application (exported — used by index.js and quickmenu.js) ──

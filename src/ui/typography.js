@@ -6,7 +6,8 @@
  */
 
 import { state, saveSettings, escapeHtml, tr, DSC_FONTS, NUMERIC_SETTINGS, normalizeFiniteNumber } from '../core.js';
-import { applyFontSize, applyFontFamily } from './settings-sync.js';
+import { applyFontSize, applyFontFamily, setColorScheme } from './settings-sync.js';
+import { COLOR_SCHEMES } from './color-schemes.js';
 
 let _popover = null;
 
@@ -28,6 +29,14 @@ export function toggleTypographyPopover(btn) {
     const famChips = Object.entries(DSC_FONTS).map(([k, f]) =>
         `<button class="dsc_chip${state.settings.fontFamily === k ? ' dsc_selected' : ''}" data-typ-fam="${k}" type="button">${escapeHtml(tr(f.label, `dscomments.font.${k}`))}</button>`
     ).join('');
+    // Color scheme chips (fork addition): a small swatch of each scheme's accent.
+    const schemeChips = Object.values(COLOR_SCHEMES).map(sc => {
+        const swatch = sc.id === 'native'
+            ? 'var(--SmartThemeQuoteColor, #9f86ff)'
+            : sc.id === 'custom' ? escapeHtml(state.settings.customColor) : sc.accent;
+        return `<button class="dsc_chip dsc_scheme_chip${state.settings.colorScheme === sc.id ? ' dsc_selected' : ''}" data-typ-scheme="${sc.id}" type="button">`
+            + `<span class="dsc_chip_swatch" style="background:${swatch}"></span>${escapeHtml(tr(sc.label, sc.i18nKey))}</button>`;
+    }).join('');
 
     _popover.innerHTML = `
         <div class="dsc_pop_group">
@@ -42,6 +51,11 @@ export function toggleTypographyPopover(btn) {
         <div class="dsc_pop_group">
             <div class="dsc_pop_label">${tr('Family', 'dscomments.font.family')}</div>
             <div class="dsc_chips">${famChips}</div>
+        </div>
+        <div class="dsc_pop_divider"></div>
+        <div class="dsc_pop_group">
+            <div class="dsc_pop_label">${tr('Color scheme', 'dscomments.settings.colorScheme')}</div>
+            <div class="dsc_chips">${schemeChips}</div>
         </div>
     `;
     document.body.appendChild(_popover);
@@ -102,6 +116,13 @@ function wireEvents() {
             _popover.querySelectorAll('[data-typ-fam]').forEach(c =>
                 c.classList.toggle('dsc_selected', c === this));
             saveSettings();
+        });
+    });
+    _popover.querySelectorAll('[data-typ-scheme]').forEach(el => {
+        el.addEventListener('click', function () {
+            setColorScheme(this.dataset.typScheme);
+            _popover?.querySelectorAll('[data-typ-scheme]').forEach(c =>
+                c.classList.toggle('dsc_selected', c === this));
         });
     });
 }
