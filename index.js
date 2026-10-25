@@ -41,7 +41,7 @@ import {
     syncPromptEditor, loadPromptContent, savePromptContent, savePromptAs, deletePrompt, resetPromptToBuiltin,
     migrateTemplatesFromLocalforage,
     syncNumericInput, createSettingsLorebookLifecycle,
-    setColorScheme, setCustomColor,
+    setColorScheme, setCustomColor, isBuiltinTemplate,
 } from './src/ui/settings-sync.js';
 import { createLorebookPicker } from './src/ui/lorebook-picker.js';
 import { getChatLoreConfig, saveChatLoreConfig } from './src/lorebooks.js';
@@ -682,8 +682,8 @@ async function handleTemplateSave() {
         toastr?.warning(tr('The template is empty — enter some text first.', 'dscomments.template.emptySave'));
         return;
     }
-    if (cur === 'main') {
-        const name = await showInputModal(tr('Save as a new template:', 'dscomments.template.saveAs'), 'main_copy');
+    if (isBuiltinTemplate(cur)) {
+        const name = await showInputModal(tr('Save as a new template:', 'dscomments.template.saveAs'), `${cur}_copy`);
         if (!name) return;
         const ok = await savePromptAs(name, content);
         if (ok) { await syncPromptEditor(); toastr?.success(tr('Template created', 'dscomments.template.created')); }
@@ -706,7 +706,7 @@ async function handleTemplateCreate() {
 
 async function handleTemplateReset() {
     const cur = state.settings.promptTemplate || 'main';
-    if (cur === 'main') return;   // Built-ins cannot be reset (button is disabled; guard anyway).
+    if (isBuiltinTemplate(cur)) return;   // Built-ins cannot be reset (button is disabled; guard anyway).
     const ok = await showConfirmModal(tr('Reset vibe to the built-in template (main)?', 'dscomments.template.resetConfirm'));
     if (!ok) return;
     await resetPromptToBuiltin();
@@ -716,7 +716,7 @@ async function handleTemplateReset() {
 
 async function handleTemplateDel() {
     const cur = state.settings.promptTemplate || 'main';
-    if (cur === 'main') return;   // Built-ins cannot be deleted (button is disabled; guard anyway).
+    if (isBuiltinTemplate(cur)) return;   // Built-ins cannot be deleted (button is disabled; guard anyway).
     const ok = await showConfirmModal(tr('Delete this template?', 'dscomments.template.deleteConfirm'));
     if (!ok) return;
     await deletePrompt(cur);

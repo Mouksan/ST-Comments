@@ -333,8 +333,13 @@ let _promptEditorReq = 0;
 // Built-in templates: served from /chat-styles/*.md, cannot be deleted or reset.
 const BUILTIN_TEMPLATES = {
     main: 'main',
+    // Fork additions. fandom-chaos is the upstream feature branch's 'test'
+    // vibe, renamed, text untouched.
+    'fandom-chaos': 'fandom-chaos',
+    'bl-feed': 'bl-feed',
+    'bl-omegaverse': 'bl-omegaverse',
 };
-const isBuiltinTemplate = (name) => Object.prototype.hasOwnProperty.call(BUILTIN_TEMPLATES, name);
+export const isBuiltinTemplate = (name) => Object.prototype.hasOwnProperty.call(BUILTIN_TEMPLATES, name);
 const _builtinCache = {};
 
 /**
