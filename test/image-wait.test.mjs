@@ -187,6 +187,7 @@ test('generateFeed: waits for the pending image, then attaches the finished one'
     assert.ok(Array.isArray(last), 'finished image is attached');
     assert.match(last[0].text, /illustrated by 1 attached image/);
     assert.doesNotMatch(last[0].text, /MORE art/);
+    assert.match(last[0].text, /never by file names/);
 });
 
 test('generateFeed: images off → no waiting even with a pending tag', async () => {

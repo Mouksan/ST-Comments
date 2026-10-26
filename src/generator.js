@@ -797,7 +797,7 @@ export async function generateFeed(targetMsgId, targetSwipeIdx, forceRegenerate 
             imagesAttached = imageParts.length;
             if (imageParts.length) {
                 finalUserMessages = [...userMessages, [
-                    { type: 'text', text: `[The chapter is illustrated by ${imageParts.length} attached image(s). The commenters see them: react to how the characters look and what the picture shows.]` },
+                    { type: 'text', text: `[The chapter is illustrated by ${imageParts.length} attached image(s). The commenters see them: react to how the characters look and what the picture shows. Call them the art or the illustration — never by file names.]` },
                     ...imageParts,
                 ]];
             }
