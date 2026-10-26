@@ -13,7 +13,7 @@ import { state, getCtx } from '../src/core.js';
 import { isUsableImageSrc, hasPendingPostImages, planPostImages, postImageSources } from '../src/images.js';
 import { waitForPostImages, skipImageWait, isWaitingForImages } from '../src/image-wait.js';
 import { _testGenerateFeed } from '../src/generator.js';
-import { _resetFeedFileStore } from '../src/feed-file-store.js';
+import { _resetFeedFileStore, getFeedSlot } from '../src/feed-file-store.js';
 import { setImagesEnabled } from '../src/ui/quickmenu.js';
 
 const TINY_PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
@@ -187,7 +187,9 @@ test('generateFeed: waits for the pending image, then attaches the finished one'
     assert.ok(Array.isArray(last), 'finished image is attached');
     assert.match(last[0].text, /illustrated by 1 attached image/);
     assert.doesNotMatch(last[0].text, /MORE art/);
-    assert.match(last[0].text, /never by file names/);
+    assert.match(last[0].text, /never see file names/);
+    assert.equal(last[1].text, 'Illustration 1:', 'each picture is labelled');
+    assert.equal(last[2].type, 'image_url');
 });
 
 test('generateFeed: images off → no waiting even with a pending tag', async () => {
@@ -245,4 +247,18 @@ test('setImagesEnabled: off remembers auto/always, on restores it', () => {
     state.settings = { includeImages: 'off' };
     setImagesEnabled(true);
     assert.equal(state.settings.includeImages, 'always', 'default resume mode is always');
+});
+
+// ── citation cleanup ──
+
+test('generateFeed: Gemini citation marks are stripped from comments and quotes', async () => {
+    setupGeneration('plain post');
+    const response = JSON.stringify([
+        { username: 'a', content: 'мазь прям светится зеленым[cite: 2]. Вейн туда что-то подмешал', reactions: [] },
+        { username: 'b', content: '[cite_start]пресс Адриана [cite: 1, 2] незаконно', reply: { to: 'a', quote: 'светится зеленым[cite: 2]' }, reactions: [] },
+    ]);
+    await _testGenerateFeed('0', 0, true, async () => response);
+    const stored = JSON.stringify(getFeedSlot('0', 0));
+    assert.match(stored, /светится зеленым/, 'feed was stored');
+    assert.doesNotMatch(stored, /\[cite/, 'no citation marks survive');
 });

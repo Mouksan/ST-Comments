@@ -21,6 +21,7 @@ import { setStatus, syncRegenVisual } from './ui/chrome.js';
 import { playNotificationSound } from './sound.js';
 import { planPostImages, loadImageParts, shouldAttachImages } from './images.js';
 import { waitForPostImages, skipImageWait } from './image-wait.js';
+import { cleanParsedComments } from './text-cleanup.js';
 
 // ── Prompt Cache (builtin .md templates, keyed by name) ──
 const _builtinPromptCache = {};
@@ -796,9 +797,11 @@ export async function generateFeed(targetMsgId, targetSwipeIdx, forceRegenerate 
             }
             imagesAttached = imageParts.length;
             if (imageParts.length) {
+                // Each picture gets a label: unnamed attachments make some models
+                // (Gemini) invent "file.jpg" names and cite them like files.
                 finalUserMessages = [...userMessages, [
-                    { type: 'text', text: `[The chapter is illustrated by ${imageParts.length} attached image(s). The commenters see them: react to how the characters look and what the picture shows. Call them the art or the illustration — never by file names.]` },
-                    ...imageParts,
+                    { type: 'text', text: `[The chapter is illustrated by ${imageParts.length} attached image(s). The commenters see them: react to how the characters look and what the picture shows. Readers never see file names — they say «на арте», «на картинке», «визуал», never "file.jpg" or citation marks.]` },
+                    ...imageParts.flatMap((part, i) => [{ type: 'text', text: `Illustration ${i + 1}:` }, part]),
                 ]];
             }
             recordEvent('log', `event=generation_images target=#${resolvedMsgId}[${resolvedSwipeIdx}] attached=${imageParts.length}/${imagePlan.images.length}`);
@@ -855,7 +858,7 @@ export async function generateFeed(targetMsgId, targetSwipeIdx, forceRegenerate 
                 trace('parseCommentary: raw response length', rawText.length);
 
                 const parseStartedAt = performance.now();
-                messages = parseCommentary(rawText);
+                messages = cleanParsedComments(parseCommentary(rawText));
                 markPhase('parse', parseStartedAt);
                 if (!messages || (withImages && messages.length === 0)) {
                     recordEvent('warn', `event=generation_parse target=#${resolvedMsgId}[${resolvedSwipeIdx}] result=error images=${withImages} responseChars=${rawText.length}`);
