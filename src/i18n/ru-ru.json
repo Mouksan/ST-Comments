@@ -67,6 +67,8 @@
     "dscomments.scheme.frost": "Иней",
     "dscomments.scheme.ink": "Тушь",
     "dscomments.scheme.custom": "Свой цвет",
+    "dscomments.settings.userTurn": "Мой пост — часть главы",
+    "dscomments.settings.userTurnHint": "Комментаторы реагируют и на твой пост перед ответом (примерно треть комментов).",
     "dscomments.settings.images": "Картинки поста",
     "dscomments.settings.imagesOff": "Выкл",
     "dscomments.settings.imagesAuto": "Авто (мультимодальные модели)",

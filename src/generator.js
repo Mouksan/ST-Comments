@@ -177,11 +177,40 @@ function buildChatHistoryParts(anchorMsgId, anchorSwipeIdx, ctx = getCtx()) {
         const anchor = recent[recent.length - 1];
         const anchorName = anchor.is_user ? (ctx.name1 || 'User') : (anchor.name || 'AI');
         const anchorText = extractText(readSwipeText(anchor, anchorSwipeIdx));
+        // Fork: the user's post right before the reply joins the current
+        // chapter as Part 1 (it otherwise sits in [Previously] under "do NOT
+        // react"). Only for an immediately preceding, visible, non-system
+        // user post; the reply keeps about two thirds of the thread.
+        const turn = settings.includeUserTurn ? precedingUserTurn(chat, endIdx - 1, anchor) : null;
+        if (turn && recent.includes(turn)) {
+            const userName = ctx.name1 || 'User';
+            return {
+                earlier: recent.slice(0, -1).filter(m => m !== turn).map(fmtLine),
+                anchor: `[Current chapter — two parts, both brand new:\n`
+                    + `Part 1 — ${userName}:\n${extractText(turn.mes || '')}\n`
+                    + `Part 2 — ${anchorName}:\n${anchorText}\n`
+                    + `Split the thread between both parts: about a third of the comments react to Part 1, the rest to Part 2. `
+                    + `Quote specific lines from each; a comment linking Part 1 to Part 2 counts for both. Neither part may hijack the thread.]`,
+            };
+        }
         return {
             earlier: recent.slice(0, -1).map(fmtLine),
             anchor: `[Current chapter:\n${anchorName}: ${anchorText}]`,
         };
     } catch { return { earlier: [], anchor: '' }; }
+}
+
+/**
+ * The user's post directly before an AI anchor, or null. Directly = the very
+ * previous chat entry: a hidden/system message in between means "no user turn"
+ * (no skipping), and a user anchor never pairs.
+ */
+function precedingUserTurn(chat, anchorIdx, anchor) {
+    if (!anchor || anchor.is_user || anchorIdx < 1) return null;
+    const prev = chat[anchorIdx - 1];
+    if (!prev || !prev.is_user || prev.is_system || prev.is_hidden) return null;
+    if (!extractText(prev.mes || '').trim()) return null;
+    return prev;
 }
 
 function buildChatHistory(anchorMsgId, anchorSwipeIdx) {

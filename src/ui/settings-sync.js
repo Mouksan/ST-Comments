@@ -22,6 +22,7 @@ const FIELD_MAP = {
     dsc_apikey:         { prop: '__apikey',                    type: 'password' }, // localforage-backed
     dsc_count:          { prop: 'userCount',                   type: 'number' },
     dsc_depth:          { prop: 'contextDepth',                type: 'number' },
+    dsc_userturn:       { prop: 'includeUserTurn',             type: 'checkbox' },
     dsc_hist:           { prop: 'includeChatHistory',          type: 'checkbox' },
     dsc_persona:        { prop: 'includePersona',              type: 'checkbox' },
     dsc_chardesc:       { prop: 'includeCharacterDescription', type: 'checkbox' },
