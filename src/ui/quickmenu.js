@@ -7,8 +7,7 @@
 
 import { state, getCtx, saveSettings, aiPostIndices, tr, warn } from '../core.js';
 import { selectCommentaryTarget, setCurrentPost, updatePostIndicator } from '../cache.js';
-// Static import from lifecycle.js avoids the quickmenu↔index import cycle.
-import { onNoSaveModeChanged } from '../lifecycle.js';
+import { syncDomFromState, syncPanelVisibility } from './settings-sync.js';
 
 export function isQsMenuOpen() { return !!state.qsMenuOpen; }
 
@@ -49,8 +48,8 @@ export function toggleQsMenu(btn) {
 
         <div class="dsc_qs_group">
             <label class="dsc_toggle_row"><input type="checkbox" id="dscQsAutoupdate" class="checkbox"> ${tr('Auto-update', 'dscomments.quick.autoupdate')}</label>
-            <label class="dsc_toggle_row"><input type="checkbox" id="dscQsNosave" class="checkbox"> ${tr('No-save', 'dscomments.quick.nosave')}</label>
-            <label class="dsc_toggle_row"><input type="checkbox" id="dscQsSound" class="checkbox"> ${tr('Sound', 'dscomments.quick.sound')}</label>
+            <label class="dsc_toggle_row"><input type="checkbox" id="dscQsImages" class="checkbox"> ${tr('Post images', 'dscomments.quick.images')}</label>
+            <label class="dsc_toggle_row"><input type="checkbox" id="dscQsPastComments" class="checkbox"> ${tr('Past comment threads', 'dscomments.quick.pastComments')}</label>
         </div>
     `;
 
@@ -181,8 +180,8 @@ function openPostSelector(menu) {
 function syncQsToggles(menu) {
     const set = (id, val) => { const el = menu.querySelector(id); if (el) el.checked = !!val; };
     set('#dscQsAutoupdate', state.settings.autoUpdate);
-    set('#dscQsNosave', state.settings.noSaveMode);
-    set('#dscQsSound', state.settings.soundEnabled);
+    set('#dscQsImages', state.settings.includeImages && state.settings.includeImages !== 'off');
+    set('#dscQsPastComments', state.settings.includePastComments);
 }
 
 function wireQsEvents(menu) {
@@ -194,12 +193,40 @@ function wireQsEvents(menu) {
     menu.querySelector('#dscQsAutoupdate')?.addEventListener('change', function () {
         state.settings.autoUpdate = this.checked; saveSettings();
     });
-    menu.querySelector('#dscQsNosave')?.addEventListener('change', function () {
-        state.settings.noSaveMode = this.checked;
-        // Mode toggle = immediate feed recalculation.
-        onNoSaveModeChanged().catch((e) => warn('onNoSaveModeChanged error:', e));
+    // Fork: No-save and Sound live in the settings drawer only; the menu
+    // carries the two context toggles that change from scene to scene.
+    menu.querySelector('#dscQsImages')?.addEventListener('change', function () {
+        setImagesEnabled(this.checked);
+        syncSettingsDrawer();
     });
-    menu.querySelector('#dscQsSound')?.addEventListener('change', function () {
-        state.settings.soundEnabled = this.checked; saveSettings();
+    menu.querySelector('#dscQsPastComments')?.addEventListener('change', function () {
+        state.settings.includePastComments = this.checked; saveSettings();
+        syncSettingsDrawer();
     });
+}
+
+/**
+ * Quick on/off for post images. Off remembers the drawer's mode ('auto' or
+ * 'always') so switching back on restores it instead of guessing.
+ * @param {boolean} on
+ */
+export function setImagesEnabled(on) {
+    const s = state.settings;
+    if (on) {
+        s.includeImages = s.imagesResumeMode === 'auto' ? 'auto' : 'always';
+    } else {
+        if (s.includeImages === 'auto' || s.includeImages === 'always') s.imagesResumeMode = s.includeImages;
+        s.includeImages = 'off';
+    }
+    saveSettings();
+}
+
+/** Mirror quick-menu changes into the settings drawer, if it is rendered. */
+function syncSettingsDrawer() {
+    try {
+        syncDomFromState();
+        syncPanelVisibility();
+    } catch (e) {
+        warn('quick menu: settings drawer sync failed', e);
+    }
 }

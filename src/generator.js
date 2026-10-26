@@ -19,6 +19,8 @@ import { collectPastCommentThreads, getMirrorRevision } from './feed-file-store.
 import { showFeedHtml as setFeedText } from './ui/feed-controller.js';
 import { setStatus, syncRegenVisual } from './ui/chrome.js';
 import { playNotificationSound } from './sound.js';
+import { planPostImages, loadImageParts, shouldAttachImages } from './images.js';
+import { waitForPostImages, skipImageWait } from './image-wait.js';
 
 // ── Prompt Cache (builtin .md templates, keyed by name) ──
 const _builtinPromptCache = {};
@@ -472,6 +474,17 @@ export async function getCurrentGenerationFingerprint(ctx = getCtx(), anchorMsgI
         input.includePastComments = false;
         input.pastCommentsHash = '';
     }
+    // Same image plan as generateFeed (active swipe here; generation computes
+    // the requested one — identical for the render trigger path this precheck
+    // serves). Empty hash → the fp gains no field, matching legacy behaviour.
+    const anchorMsg = anchorMsgId !== undefined && anchorMsgId !== null
+        ? ctx?.chat?.[parseInt(anchorMsgId)]
+        : null;
+    const anchorSwipeIdx = typeof anchorMsg?.swipe_id === 'number' ? anchorMsg.swipe_id : 0;
+    input.imagesHash = planPostImages(anchorMsg, anchorSwipeIdx, settings, {
+        api: input.profileApi,
+        model: input.profileModel,
+    }).hash;
     const fp = buildGenerationFingerprint(input);
     const diag = getLastFpDiag();
     _fpCacheKey = cacheKey;
@@ -491,6 +504,8 @@ function _fpSettingsKey(s) {
         s.apiSource, s.profileId, s.customEndpoint, s.customModel,
         s.userCount, s.contextDepth, s.includeChatHistory, s.includePersona,
         s.includeCharacterDescription, s.includePastComments, s.pastCommentsDepth,
+        // Image attach mode changes the imagesHash side of the fp.
+        s.includeImages,
         s.promptTemplate, s.enableJailbreakBlock,
         s.jailbreakRole, s.jailbreakText,
     ].join('|');
@@ -650,6 +665,43 @@ export async function generateFeed(targetMsgId, targetSwipeIdx, forceRegenerate 
             recordStale('fingerprint');
             return;
         }
+
+        // Post images. Fork: when images will be attached, first wait for the
+        // image extension to finish drawing this post (Frameweaver starts after
+        // us) — otherwise the commenters would get a placeholder instead of the
+        // picture. Then plan (sync, no fetching): the plan rides the
+        // fingerprint so a changed/removed attachment makes the cached feed
+        // soft-stale; the actual download happens after the cache check.
+        const imageProfile = { api: generationInput.profileApi, model: generationInput.profileModel };
+        if (shouldAttachImages(settings, imageProfile)) {
+            const waitStartedAt = performance.now();
+            const waited = await waitForPostImages({
+                messageId: resolvedMsgId,
+                swipeIdx: resolvedSwipeIdx,
+                signal,
+                onWaitStart: () => setStatus(tr('Waiting for the image…', 'dscomments.status.waitingImage'), {
+                    isAction: true,
+                    actionLabel: tr("Don't wait", 'dscomments.action.dontWait'),
+                    onAction: skipImageWait,
+                }),
+            });
+            if (waited !== 'none') {
+                markPhase('imageWait', waitStartedAt);
+                recordEvent('log', `event=generation_image_wait target=#${resolvedMsgId}[${resolvedSwipeIdx}] outcome=${waited} durationMs=${phaseMs.imageWait}`);
+                if (!isEpochCurrent(epoch)) {
+                    trace('generateFeed: discarding stale result (epoch changed while waiting for images)');
+                    recordStale('image-wait');
+                    return;
+                }
+                setStatus(tr('Generation in progress', 'dscomments.status.generating'), { isAction: true, actionLabel: tr('Cancel', 'dscomments.action.cancel') });
+                if (waited === 'timeout') {
+                    globalThis.toastr?.warning(tr('The image is taking too long — generating comments without it.', 'dscomments.images.waitTimeout'));
+                }
+            }
+        }
+        const anchorMsg = getCtx().chat?.[parseInt(resolvedMsgId)];
+        const imagePlan = planPostImages(anchorMsg, resolvedSwipeIdx, settings, imageProfile);
+        generationInput.imagesHash = imagePlan.hash;
         const generationFp = buildGenerationFingerprint(generationInput);
 
         // noSaveMode / cache. Style must be loaded first because its text is part
@@ -727,6 +779,31 @@ export async function generateFeed(targetMsgId, targetSwipeIdx, forceRegenerate 
         const { systemPrompt, userMessages, assistantPrefill } = assembled;
         const jailbreakBlock = assembled.jailbreakIncluded;
 
+        // Attach the anchor post's images as one trailing user message. The
+        // fetch happens HERE — after the cache check above — so a cache hit
+        // costs no downloads. Failures skip individual images; a post whose
+        // images all failed generates text-only (never aborts the run).
+        let finalUserMessages = userMessages;
+        let imagesAttached = 0;
+        if (imagePlan.attach && imagePlan.images.length) {
+            const imagesStartedAt = performance.now();
+            const imageParts = await loadImageParts(imagePlan.images);
+            markPhase('images', imagesStartedAt);
+            if (!isEpochCurrent(epoch)) {
+                trace('generateFeed: discarding stale result (epoch changed during image load)');
+                recordStale('images');
+                return;
+            }
+            imagesAttached = imageParts.length;
+            if (imageParts.length) {
+                finalUserMessages = [...userMessages, [
+                    { type: 'text', text: `[The chapter is illustrated by ${imageParts.length} attached image(s). The commenters see them: react to how the characters look and what the picture shows.]` },
+                    ...imageParts,
+                ]];
+            }
+            recordEvent('log', `event=generation_images target=#${resolvedMsgId}[${resolvedSwipeIdx}] attached=${imageParts.length}/${imagePlan.images.length}`);
+        }
+
         // Prompt assembly summary (block sizes only, no content).
         trace('generateFeed: prompt built', {
             anchor: `#${resolvedMsgId}[${resolvedSwipeIdx}]`,
@@ -736,45 +813,63 @@ export async function generateFeed(targetMsgId, targetSwipeIdx, forceRegenerate 
             personaIncluded: assembled.personaIncluded,
             characterIncluded: assembled.characterIncluded,
             systemChars: systemPrompt.length,
-            userChars: userMessages.reduce((total, message) => total + message.length, 0),
+            userChars: finalUserMessages.reduce((total, message) => total + (typeof message === 'string' ? message.length : message.reduce((t, p) => t + String(p?.text ?? '').length, 0)), 0),
+            imagesAttached,
             prefillChars: assistantPrefill.length,
             jailbreak: !!jailbreakBlock,
             apiSource: settings.apiSource,
         });
 
-        const apiStartedAt = performance.now();
+        // Fork: with images attached, a refusal/error/empty parse is retried
+        // once WITHOUT the images (the picture is the most likely culprit:
+        // provider filters, a model without vision). Cancel never retries.
+        const attemptMessages = imagesAttached ? [finalUserMessages, userMessages] : [userMessages];
         let rawText;
-        try {
-            rawText = await callGenerationAPI(systemPrompt, userMessages, assistantPrefill, signal);
-        } catch (cause) {
-            const apiDurationMs = Math.round(performance.now() - apiStartedAt);
-            phaseMs.api = apiDurationMs;
-            recordEvent('error', `event=generation_api target=#${resolvedMsgId}[${resolvedSwipeIdx}] result=error durationMs=${apiDurationMs} name=${cause?.name || 'Error'} error=${cause?.message || cause}`);
-            throw cause;
+        let messages;
+        for (let attempt = 0; attempt < attemptMessages.length; attempt++) {
+            const withImages = imagesAttached > 0 && attempt === 0;
+            const isLastAttempt = attempt === attemptMessages.length - 1;
+            try {
+                const apiStartedAt = performance.now();
+                try {
+                    rawText = await callGenerationAPI(systemPrompt, attemptMessages[attempt], assistantPrefill, signal);
+                } catch (cause) {
+                    const apiDurationMs = Math.round(performance.now() - apiStartedAt);
+                    phaseMs.api = apiDurationMs;
+                    recordEvent('error', `event=generation_api target=#${resolvedMsgId}[${resolvedSwipeIdx}] result=error durationMs=${apiDurationMs} images=${withImages} name=${cause?.name || 'Error'} error=${cause?.message || cause}`);
+                    throw cause;
+                }
+                const apiDurationMs = Math.round(performance.now() - apiStartedAt);
+                phaseMs.api = apiDurationMs;
+                recordEvent('log', `event=generation_api target=#${resolvedMsgId}[${resolvedSwipeIdx}] result=success durationMs=${apiDurationMs} images=${withImages} responseChars=${String(rawText || '').length}`);
+
+                // Epoch check after the await: the chat may have changed while we generated.
+                if (!isEpochCurrent(epoch)) {
+                    trace('generateFeed: discarding stale result (epoch changed mid-flight)');
+                    recordStale('api');
+                    return;
+                }
+
+                if (!rawText) throw new Error(tr('The model returned an empty response', 'dscomments.error.emptyResponse'));
+
+                trace('parseCommentary: raw response length', rawText.length);
+
+                const parseStartedAt = performance.now();
+                messages = parseCommentary(rawText);
+                markPhase('parse', parseStartedAt);
+                if (!messages || (withImages && messages.length === 0)) {
+                    recordEvent('warn', `event=generation_parse target=#${resolvedMsgId}[${resolvedSwipeIdx}] result=error images=${withImages} responseChars=${rawText.length}`);
+                    throw new Error(tr('Could not parse the commentary.', 'dscomments.error.parse'));
+                }
+                recordEvent('log', `event=generation_parse target=#${resolvedMsgId}[${resolvedSwipeIdx}] result=success messages=${messages.length} responseChars=${rawText.length}`);
+                break;
+            } catch (cause) {
+                if (!withImages || isLastAttempt || cause?.name === 'AbortError' || signal.aborted || !isEpochCurrent(epoch)) throw cause;
+                recordEvent('warn', `event=generation_images_fallback target=#${resolvedMsgId}[${resolvedSwipeIdx}] reason=${cause?.message || cause}`);
+                globalThis.toastr?.warning(tr('The model did not accept the image — comments without it.', 'dscomments.images.fallback'));
+                imagesAttached = 0;
+            }
         }
-        const apiDurationMs = Math.round(performance.now() - apiStartedAt);
-        phaseMs.api = apiDurationMs;
-        recordEvent('log', `event=generation_api target=#${resolvedMsgId}[${resolvedSwipeIdx}] result=success durationMs=${apiDurationMs} responseChars=${String(rawText || '').length}`);
-
-        // Epoch check after the await: the chat may have changed while we generated.
-        if (!isEpochCurrent(epoch)) {
-            trace('generateFeed: discarding stale result (epoch changed mid-flight)');
-            recordStale('api');
-            return;
-        }
-
-        if (!rawText) throw new Error(tr('The model returned an empty response', 'dscomments.error.emptyResponse'));
-
-        trace('parseCommentary: raw response length', rawText.length);
-
-        const parseStartedAt = performance.now();
-        const messages = parseCommentary(rawText);
-        markPhase('parse', parseStartedAt);
-        if (!messages) {
-            recordEvent('warn', `event=generation_parse target=#${resolvedMsgId}[${resolvedSwipeIdx}] result=error responseChars=${rawText.length}`);
-            throw new Error(tr('Could not parse the commentary.', 'dscomments.error.parse'));
-        }
-        recordEvent('log', `event=generation_parse target=#${resolvedMsgId}[${resolvedSwipeIdx}] result=success messages=${messages.length} responseChars=${rawText.length}`);
 
         const html = renderMessages(messages);
 

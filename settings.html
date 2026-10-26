@@ -135,6 +135,15 @@
                 </div>
             </div>
             <div class="dsc_field_group">
+                <span class="dsc_field_label"><i class="fa-solid fa-image fa-fw"></i> <span data-i18n="dscomments.settings.images">Post images</span></span>
+                <select id="dsc_images" class="dsc_select">
+                    <option value="off" data-i18n="dscomments.settings.imagesOff">Off</option>
+                    <option value="auto" data-i18n="dscomments.settings.imagesAuto">Auto (multimodal models)</option>
+                    <option value="always" data-i18n="dscomments.settings.imagesAlways">Always</option>
+                </select>
+                <small class="dsc_hint dsc_scheme_hint" data-i18n="dscomments.settings.imagesHint">Commenters see the current post's images (up to 4). If a Frameweaver image is still being drawn, comments wait for it.</small>
+            </div>
+            <div class="dsc_field_group">
                 <span class="dsc_field_label"><i class="fa-solid fa-list-check fa-fw"></i> <span data-i18n="dscomments.settings.context">Context</span></span>
                 <label class="dsc_toggle_row"><input type="checkbox" id="dsc_hist" class="checkbox"> <span data-i18n="dscomments.settings.history">Chat history</span></label>
                 <div id="dsc_depth_group" hidden>

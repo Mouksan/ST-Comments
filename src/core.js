@@ -59,6 +59,14 @@ export const defaultSettings = Object.freeze({
     colorScheme: 'native',
     customColor: DEFAULT_CUSTOM_COLOR,
 
+    // multimodality: attach the anchor post's images to the prompt.
+    // 'off' (default — prompt and fingerprint stay byte-identical), 'auto'
+    // (only when the source model looks vision-capable), 'always'.
+    includeImages: 'off',
+    // Fork: the quick-menu toggle remembers which mode to restore when it is
+    // switched back on ('auto' | 'always').
+    imagesResumeMode: 'always',
+
     // context assembly toggles
     includeChatHistory: true,
     contextDepth: 4,
@@ -405,6 +413,12 @@ export async function loadSettings() {
     }
     if (!['bar', 'floating', 'both'].includes(state.settings.launcherMode)) {
         state.settings.launcherMode = defaultSettings.launcherMode;
+    }
+    if (!['off', 'auto', 'always'].includes(state.settings.includeImages)) {
+        state.settings.includeImages = defaultSettings.includeImages;
+    }
+    if (!['auto', 'always'].includes(state.settings.imagesResumeMode)) {
+        state.settings.imagesResumeMode = defaultSettings.imagesResumeMode;
     }
     if (!isKnownScheme(state.settings.colorScheme)) {
         state.settings.colorScheme = defaultSettings.colorScheme;

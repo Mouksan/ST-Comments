@@ -643,6 +643,7 @@ function bindSettingsPanelEvents() {
         }
         if (el.id === 'dsc_fontfam') { applyFontFamily(el.value); }
         if (el.id === 'dsc_launcher_mode') { ensureLauncher(); }
+        if (el.id === 'dsc_images' && el.value !== 'off') { state.settings.imagesResumeMode = el.value; saveSettings(); }
         if (el.id === 'dsc_enabled') { syncPanelToSettings().catch(e => error('syncPanelToSettings error:', e)); }
     });
 
