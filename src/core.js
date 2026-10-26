@@ -70,6 +70,9 @@ export const defaultSettings = Object.freeze({
     // context assembly toggles
     includeChatHistory: true,
     contextDepth: 4,
+    // Fork: the user's post right before the reply is commented as part of
+    // the current chapter (about a third of the thread). Off by default.
+    includeUserTurn: false,
     includeUser: false,               // include user persona in context
     includePersona: false,
     includeCharacterDescription: false,
