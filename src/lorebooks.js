@@ -470,6 +470,10 @@ export function buildGenerationFingerprintInput(input = {}) {
             ? Math.max(0, Math.min(10, parseInt(settings.pastCommentsDepth)))
             : null,
         pastCommentsHash: normalizeString(input.pastCommentsHash),
+        // Attached-image identity hash. CONDITIONAL on purpose: only present
+        // when images are actually attached to the anchor, so image-less
+        // generations keep the exact pre-feature fingerprint.
+        ...(input.imagesHash ? { imagesHash: normalizeString(input.imagesHash) } : {}),
         promptTemplate: normalizeString(settings.promptTemplate),
         stylePrompt: normalizeString(input.stylePrompt),
         userCount: Number.isFinite(parsedCount) && parsedCount !== 0 ? parsedCount : 5,
@@ -503,6 +507,9 @@ export function buildGenerationFingerprint(input) {
             ? Math.max(0, Math.min(10, source.pastCommentsDepth))
             : null,
         pastCommentsHash: normalizeString(source.pastCommentsHash),
+        // See buildGenerationFingerprintInput: conditional so legacy inputs
+        // (and image-less posts) hash identically to before the feature.
+        ...(source.imagesHash ? { imagesHash: normalizeString(source.imagesHash) } : {}),
         promptTemplate: normalizeString(source.promptTemplate),
         stylePrompt: normalizeString(source.stylePrompt),
         userCount: Number.isFinite(parsedCount) && parsedCount !== 0 ? parsedCount : 5,

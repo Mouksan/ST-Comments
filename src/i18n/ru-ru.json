@@ -67,6 +67,17 @@
     "dscomments.scheme.frost": "Иней",
     "dscomments.scheme.ink": "Тушь",
     "dscomments.scheme.custom": "Свой цвет",
+    "dscomments.settings.images": "Картинки поста",
+    "dscomments.settings.imagesOff": "Выкл",
+    "dscomments.settings.imagesAuto": "Авто (мультимодальные модели)",
+    "dscomments.settings.imagesAlways": "Всегда",
+    "dscomments.settings.imagesHint": "Комментаторы видят картинки текущего поста (до 4 шт.). Если в посте ещё рисуется картинка Frameweaver, комменты подождут её.",
+    "dscomments.status.waitingImage": "Жду картинку…",
+    "dscomments.action.dontWait": "Не ждать",
+    "dscomments.images.waitTimeout": "Картинка рисуется слишком долго — комменты без неё.",
+    "dscomments.images.fallback": "Модель не приняла картинку — комменты без неё.",
+    "dscomments.quick.images": "Картинки поста",
+    "dscomments.quick.pastComments": "Прошлые треды",
     "dscomments.fab.hint": "DS Comments — нажмите, чтобы открыть/закрыть; перетащите, чтобы переместить",
     "dscomments.action.create": "Создать",
     "dscomments.action.collapse": "Свернуть",
@@ -187,7 +198,5 @@
     "dscomments.empty.disabledHint": "Включи галочку в настройках расширения.",
     "dscomments.toast.guidfail": "Не удалось сохранить идентификатор чата для кэша комментариев.",
     "dscomments.toast.storefail": "Не удалось сохранить комментарии на сервер.",
-    "dscomments.quick.autoupdate": "Авто-обновление",
-    "dscomments.quick.nosave": "Без сохранения",
-    "dscomments.quick.sound": "Звук"
+    "dscomments.quick.autoupdate": "Авто-обновление"
 }

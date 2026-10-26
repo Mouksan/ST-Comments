@@ -18,7 +18,8 @@ import { iconHtml } from './icons.js';
  * the contract must hold mechanically even if a future caller passes server
  * error text instead of a constant.
  * @param {string} message  Empty string = hide.
- * @param {{isAction?: boolean, actionLabel?: string, isCancel?: boolean}} [opts]
+ * @param {{isAction?: boolean, actionLabel?: string, isCancel?: boolean, onAction?: () => void}} [opts]
+ *   onAction (fork): custom button behaviour instead of "cancel generation".
  */
 export function setStatus(message, opts = {}) {
     const overlay = document.getElementById('dscStatusOverlay');
@@ -35,7 +36,9 @@ export function setStatus(message, opts = {}) {
     overlay.classList.toggle('active', true);
     if (opts.isAction) {
         const btn = overlay.querySelector('#dscCancelGen');
-        if (btn) btn.addEventListener('click', () => {
+        if (btn && typeof opts.onAction === 'function') {
+            btn.addEventListener('click', () => opts.onAction(), { once: true });
+        } else if (btn) btn.addEventListener('click', () => {
             if (state.abortController) {
                 state.abortController.abort();
                 state.abortController = null;
