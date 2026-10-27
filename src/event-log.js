@@ -27,10 +27,15 @@ let _loaded = false;
 let _sessionId = newSessionId();
 
 function newSessionId() {
+    // randomUUID needs a secure context; plain http:// LAN setups land here.
     try {
-        if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID().slice(0, 12);
+        const c = globalThis.crypto;
+        if (c?.randomUUID) return c.randomUUID().slice(0, 12);
+        if (c?.getRandomValues) {
+            return Array.from(c.getRandomValues(new Uint8Array(8)), b => b.toString(36)).join('').slice(0, 12);
+        }
     } catch { /* fall through */ }
-    return Math.random().toString(36).slice(2, 14);
+    return Date.now().toString(36);
 }
 
 function _ts() {
