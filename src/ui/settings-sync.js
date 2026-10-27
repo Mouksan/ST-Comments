@@ -5,7 +5,7 @@
  * application and prompt-template management (localforage, edit-on-place).
  */
 
-import { state, getCtx, BASE_URL, saveSettings, escapeHtml, getApiKey, setApiKey, DSC_FONTS, LF_PROMPTS, log, warn, NUMERIC_SETTINGS, normalizeFiniteNumber, tr } from '../core.js';
+import { state, getCtx, BASE_URL, saveSettings, escapeHtml, getApiKey, setApiKey, getGiphyKey, DSC_FONTS, LF_PROMPTS, log, warn, NUMERIC_SETTINGS, normalizeFiniteNumber, tr } from '../core.js';
 import { getProfiles, getProfileDetails } from '../connection.js';
 import { refreshThemeTokens } from './theme-sync.js';
 import { isKnownScheme, isHexColor } from './color-schemes.js';
@@ -14,6 +14,8 @@ import { isKnownScheme, isHexColor } from './color-schemes.js';
 const FIELD_MAP = {
     dsc_enabled:        { prop: 'enabled',                     type: 'checkbox' },
     dsc_autoupdate:     { prop: 'autoUpdate',                  type: 'checkbox' },
+    dsc_userposts:      { prop: 'commentUserPosts',            type: 'checkbox' },
+    dsc_userposts_auto: { prop: 'autoUpdateUserPosts',         type: 'checkbox' },
     dsc_nosave:         { prop: 'noSaveMode',                  type: 'checkbox' },
     dsc_source:         { prop: 'apiSource',                   type: 'segmented' }, // 2 buttons: Profile / Custom
     dsc_profile:        { prop: 'profileId',                   type: 'select' },
@@ -28,12 +30,22 @@ const FIELD_MAP = {
     dsc_chardesc:       { prop: 'includeCharacterDescription', type: 'checkbox' },
     dsc_pastcom:        { prop: 'includePastComments',         type: 'checkbox' },
     dsc_pastcom_depth:  { prop: 'pastCommentsDepth',           type: 'number' },
+    dsc_images:         { prop: 'includeImages',               type: 'select' },
+    dsc_media_provider: { prop: 'mediaProvider',               type: 'select' },
+    dsc_media_rating:   { prop: 'mediaRating',                 type: 'select' },
+    dsc_media_stickers: { prop: 'mediaStickers',               type: 'checkbox' },
+    dsc_media_memes:    { prop: 'mediaMemes',                  type: 'checkbox' },
+    dsc_gif_max:        { prop: 'gifMax',                      type: 'number' },
+    dsc_sticker_max:    { prop: 'stickerMax',                  type: 'number' },
+    dsc_meme_max:       { prop: 'memeMax',                     type: 'number' },
+    dsc_reaction_emotes: { prop: 'reactionEmotes',             type: 'checkbox' },
+    dsc_emote_set_id:   { prop: 'emoteSetId',                  type: 'text' },
+    dsc_structured:     { prop: 'structuredOutput',            type: 'select' },
     dsc_fontfam:        { prop: 'fontFamily',                  type: 'select' },
     dsc_fontsize:       { prop: 'fontSize',                    type: 'number' },
     dsc_launcher_mode:  { prop: 'launcherMode',                type: 'select' },
     dsc_color_scheme:   { prop: 'colorScheme',                 type: 'select' },
     dsc_custom_color:   { prop: 'customColor',                 type: 'color' },
-    dsc_images:         { prop: 'includeImages',               type: 'select' },
     dsc_template:       { prop: 'promptTemplate',              type: 'select' },
     dsc_jb_enable:      { prop: 'enableJailbreakBlock',        type: 'checkbox' },
     dsc_jb_role:        { prop: 'jailbreakRole',               type: 'select' },
@@ -119,6 +131,8 @@ export function syncDomFromState() {
     syncSegmentedSource();
     // API key from localforage
     syncApiKeyField();
+    // Media provider keys from localforage
+    syncMediaKeyFields();
     // Volume label
     const volLbl = document.getElementById('dsc_sound_volume_val');
     if (volLbl) volLbl.textContent = `${state.settings.soundVolume ?? 30}%`;
@@ -129,12 +143,46 @@ export function syncPanelVisibility() {
     updateSourceFieldsVisibility();
     updateDepthVisibility();
     updatePastCommentsVisibility();
+    updateUserPostsVisibility();
+    updateMediaVisibility();
     updateJailbreakVisibility();
     // Sound body: on load unhide it when sound is enabled, otherwise the slider/
     // list/test button stay invisible even though the checkbox is checked.
     updateSoundVisibility();
     updateCustomColorVisibility();
     syncPromptEditor();
+}
+
+// ── User-post modes (fork): mutually exclusive ──
+
+/**
+ * "My post is part of the chapter" (fork, includeUserTurn) and the upstream
+ * per-post user feeds (commentUserPosts) both comment the user's posts — with
+ * both on, a post would be commented twice. Turning one on turns the other
+ * off, with a short notice naming what was switched off.
+ * @param {'turn'|'feeds'} kind
+ * @param {boolean} on
+ * @returns {'turn'|'feeds'|null} the mode that was switched off, if any
+ */
+export function setUserPostMode(kind, on) {
+    const s = state.settings;
+    let switchedOff = null;
+    if (kind === 'turn') {
+        s.includeUserTurn = !!on;
+        if (on && s.commentUserPosts) { s.commentUserPosts = false; switchedOff = 'feeds'; }
+    } else {
+        s.commentUserPosts = !!on;
+        if (on && s.includeUserTurn) { s.includeUserTurn = false; switchedOff = 'turn'; }
+    }
+    saveSettings();
+    if (switchedOff) {
+        const name = switchedOff === 'turn'
+            ? tr('My post is part of the chapter', 'dscomments.settings.userTurn')
+            : tr('Comments on user posts', 'dscomments.quick.userPosts');
+        globalThis.toastr?.info(tr('"{name}" turned off — the two modes don\'t work together.', 'dscomments.settings.userModeExclusive').replace('{name}', name));
+    }
+    try { syncDomFromState(); syncPanelVisibility(); } catch { /* drawer not rendered */ }
+    return switchedOff;
 }
 
 // ── Color scheme (fork addition, see color-schemes.js) ──
@@ -250,6 +298,32 @@ function updateDepthVisibility() {
 function updatePastCommentsVisibility() {
     const el = document.getElementById('dsc_pastcom_group');
     if (el) el.hidden = !state.settings.includePastComments;
+}
+
+/** Provider-dependent media controls. The whole provider body (rating,
+ *  stickers, caps, API key) hides as one unit when no provider is selected —
+ *  the key input lives inside it, so no per-field gating is needed. */
+export function updateMediaVisibility() {
+    const body = document.getElementById('dsc_media_provider_body');
+    if (body) body.hidden = state.settings.mediaProvider !== 'giphy';
+    // reaction emotes: the 7TV set id only makes sense with the feature on
+    const emoteSet = document.getElementById('dsc_emote_set_id');
+    if (emoteSet) emoteSet.hidden = state.settings.reactionEmotes !== true;
+    // memes: the per-generation cap rides the feature toggle
+    const memeMaxGroup = document.getElementById('dsc_meme_max_group');
+    if (memeMaxGroup) memeMaxGroup.hidden = state.settings.mediaMemes !== true;
+}
+
+async function syncMediaKeyFields() {
+    try {
+        const giphy = document.getElementById('dsc_media_giphy_key');
+        if (giphy) giphy.value = await getGiphyKey() || '';
+    } catch { /* skip */ }
+}
+
+function updateUserPostsVisibility() {
+    const el = document.getElementById('dsc_userposts_auto_row');
+    if (el) el.hidden = !state.settings.commentUserPosts;
 }
 
 function updateJailbreakVisibility() {

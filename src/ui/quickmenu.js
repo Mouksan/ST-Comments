@@ -7,7 +7,7 @@
 
 import { state, getCtx, saveSettings, aiPostIndices, tr, warn } from '../core.js';
 import { selectCommentaryTarget, setCurrentPost, updatePostIndicator } from '../cache.js';
-import { syncDomFromState, syncPanelVisibility } from './settings-sync.js';
+import { syncDomFromState, syncPanelVisibility, setUserPostMode } from './settings-sync.js';
 
 export function isQsMenuOpen() { return !!state.qsMenuOpen; }
 
@@ -50,6 +50,8 @@ export function toggleQsMenu(btn) {
             <label class="dsc_toggle_row"><input type="checkbox" id="dscQsAutoupdate" class="checkbox"> ${tr('Auto-update', 'dscomments.quick.autoupdate')}</label>
             <label class="dsc_toggle_row"><input type="checkbox" id="dscQsImages" class="checkbox"> ${tr('Post images', 'dscomments.quick.images')}</label>
             <label class="dsc_toggle_row"><input type="checkbox" id="dscQsPastComments" class="checkbox"> ${tr('Past comment threads', 'dscomments.quick.pastComments')}</label>
+            <label class="dsc_toggle_row"><input type="checkbox" id="dscQsMedia" class="checkbox"> ${tr('GIFs & memes', 'dscomments.quick.media')}</label>
+            <label class="dsc_toggle_row"><input type="checkbox" id="dscQsUserPosts" class="checkbox"> ${tr('Comments on user posts', 'dscomments.quick.userPosts')}</label>
         </div>
     `;
 
@@ -182,6 +184,8 @@ function syncQsToggles(menu) {
     set('#dscQsAutoupdate', state.settings.autoUpdate);
     set('#dscQsImages', state.settings.includeImages && state.settings.includeImages !== 'off');
     set('#dscQsPastComments', state.settings.includePastComments);
+    set('#dscQsMedia', isMediaEnabled());
+    set('#dscQsUserPosts', state.settings.commentUserPosts);
 }
 
 function wireQsEvents(menu) {
@@ -202,6 +206,13 @@ function wireQsEvents(menu) {
     menu.querySelector('#dscQsPastComments')?.addEventListener('change', function () {
         state.settings.includePastComments = this.checked; saveSettings();
         syncSettingsDrawer();
+    });
+    menu.querySelector('#dscQsMedia')?.addEventListener('change', function () {
+        setMediaEnabled(this.checked);
+        syncSettingsDrawer();
+    });
+    menu.querySelector('#dscQsUserPosts')?.addEventListener('change', function () {
+        setUserPostMode('feeds', this.checked);   // switches "my post is part of the chapter" off if needed
     });
 }
 
@@ -229,4 +240,31 @@ function syncSettingsDrawer() {
     } catch (e) {
         warn('quick menu: settings drawer sync failed', e);
     }
+}
+
+/** GIFs & memes are "on" when Giphy or memes are enabled. */
+export function isMediaEnabled() {
+    return state.settings.mediaProvider === 'giphy' || state.settings.mediaMemes === true;
+}
+
+/**
+ * Quick on/off for comment media (Giphy GIFs/stickers + memes). Off remembers
+ * which of the two were on, so switching back restores exactly that; with no
+ * memory yet, both come on (Giphy without a key degrades to text by itself).
+ * @param {boolean} on
+ */
+export function setMediaEnabled(on) {
+    const s = state.settings;
+    if (on) {
+        const resume = s.mediaResume && typeof s.mediaResume === 'object' ? s.mediaResume : null;
+        const giphy = resume ? resume.giphy !== false : true;
+        const memes = resume ? resume.memes !== false : true;
+        s.mediaProvider = giphy || !memes ? 'giphy' : 'off';
+        s.mediaMemes = memes;
+    } else {
+        if (isMediaEnabled()) s.mediaResume = { giphy: s.mediaProvider === 'giphy', memes: s.mediaMemes === true };
+        s.mediaProvider = 'off';
+        s.mediaMemes = false;
+    }
+    saveSettings();
 }
