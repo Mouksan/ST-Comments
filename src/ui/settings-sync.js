@@ -23,6 +23,7 @@ const FIELD_MAP = {
     dsc_model:          { prop: 'customModel',                 type: 'text' },
     dsc_apikey:         { prop: '__apikey',                    type: 'password' }, // localforage-backed
     dsc_count:          { prop: 'userCount',                   type: 'number' },
+    dsc_timeout:        { prop: 'responseTimeoutSec',          type: 'number' },
     dsc_depth:          { prop: 'contextDepth',                type: 'number' },
     dsc_userturn:       { prop: 'includeUserTurn',             type: 'checkbox' },
     dsc_hist:           { prop: 'includeChatHistory',          type: 'checkbox' },
