@@ -990,13 +990,33 @@ export async function generateFeed(targetMsgId, targetSwipeIdx, forceRegenerate 
             const isLastAttempt = attempt === attemptMessages.length - 1;
             try {
                 const apiStartedAt = performance.now();
+                // Fork: response timeout. A per-attempt controller follows the
+                // generation's own signal (cancel/chat change) and also aborts
+                // when the model stays silent too long (stuck proxy).
+                const timeoutSec = Number(settings.responseTimeoutSec) > 0 ? Number(settings.responseTimeoutSec) : 0;
+                const attemptController = new AbortController();
+                const followAbort = () => attemptController.abort(signal.reason);
+                if (signal.aborted) followAbort(); else signal.addEventListener('abort', followAbort, { once: true });
+                let timedOut = false;
+                const timeoutTimer = timeoutSec
+                    ? setTimeout(() => { timedOut = true; attemptController.abort(new DOMException('Response timeout', 'TimeoutError')); }, timeoutSec * 1000)
+                    : null;
                 try {
-                    rawText = await callGenerationAPI(systemPrompt, attemptMessages[attempt], assistantPrefill, signal);
+                    rawText = await callGenerationAPI(systemPrompt, attemptMessages[attempt], assistantPrefill, attemptController.signal);
                 } catch (cause) {
                     const apiDurationMs = Math.round(performance.now() - apiStartedAt);
                     phaseMs.api = apiDurationMs;
+                    if (timedOut && !signal.aborted) {
+                        recordEvent('error', `event=generation_api target=#${resolvedMsgId}[${resolvedSwipeIdx}] result=timeout durationMs=${apiDurationMs} images=${withImages} timeoutSec=${timeoutSec}`);
+                        const timeoutError = new Error(tr('The model did not respond within {s} s — request cancelled.', 'dscomments.error.timeout').replace('{s}', String(timeoutSec)));
+                        timeoutError.name = 'ResponseTimeoutError';
+                        throw timeoutError;
+                    }
                     recordEvent('error', `event=generation_api target=#${resolvedMsgId}[${resolvedSwipeIdx}] result=error durationMs=${apiDurationMs} images=${withImages} name=${cause?.name || 'Error'} error=${cause?.message || cause}`);
                     throw cause;
+                } finally {
+                    if (timeoutTimer) clearTimeout(timeoutTimer);
+                    signal.removeEventListener('abort', followAbort);
                 }
                 const apiDurationMs = Math.round(performance.now() - apiStartedAt);
                 phaseMs.api = apiDurationMs;
@@ -1023,7 +1043,9 @@ export async function generateFeed(targetMsgId, targetSwipeIdx, forceRegenerate 
                 recordEvent('log', `event=generation_parse target=#${resolvedMsgId}[${resolvedSwipeIdx}] result=success messages=${messages.length} responseChars=${rawText.length}`);
                 break;
             } catch (cause) {
-                if (!withImages || isLastAttempt || cause?.name === 'AbortError' || signal.aborted || !isEpochCurrent(epoch)) throw cause;
+                // A timeout is a stuck provider, not a refused picture — retrying
+                // text-only would just add another full wait.
+                if (!withImages || isLastAttempt || cause?.name === 'AbortError' || cause?.name === 'ResponseTimeoutError' || signal.aborted || !isEpochCurrent(epoch)) throw cause;
                 recordEvent('warn', `event=generation_images_fallback target=#${resolvedMsgId}[${resolvedSwipeIdx}] reason=${cause?.message || cause}`);
                 globalThis.toastr?.warning(tr('The model did not accept the image — comments without it.', 'dscomments.images.fallback'));
                 imagesAttached = 0;

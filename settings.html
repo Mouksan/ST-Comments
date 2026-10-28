@@ -65,6 +65,11 @@
                 <span class="dsc_field_label"><span data-i18n="dscomments.settings.count">Comments per generation</span></span>
                 <input type="number" id="dsc_count" class="dsc_input dsc_input_num" min="1" max="100" value="5">
             </div>
+            <div class="dsc_field_group dsc_field_num">
+                <span class="dsc_field_label"><span data-i18n="dscomments.settings.timeout">Response timeout (s)</span>
+                    <small class="dsc_hint dsc_scheme_hint" data-i18n="dscomments.settings.timeoutHint">Cancel the request if the model stays silent this long. 0 = wait forever.</small></span>
+                <input type="number" id="dsc_timeout" class="dsc_input dsc_input_num" min="0" max="900" value="180">
+            </div>
 
             <!-- Sound (nested) -->
             <div class="dsc_sound_controls">

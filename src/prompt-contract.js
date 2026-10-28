@@ -51,7 +51,7 @@ const gifSection = (max) => `
 ## GIF ATTACHMENTS
 
 - "gif": optional string — a SHORT English search phrase (2-5 words) describing a reaction GIF. Anchor on a classic reaction mood, then adapt the words to THIS scene, and vary the moods across the feed: shock ("cat shocked", "jaw drop"), hype ("mic drop", "confetti explosion"), despair ("head in hands", "crying on the floor"), cringe ("cringe so hard", "yikes"), cope ("clown makeup", "this is fine"), applause ("slow clap", "standing ovation")
-- Use a GIF only when it genuinely amplifies the emotion of the message — at most ${max} GIF${max === 1 ? '' : 's'} per generation, most messages have none
+- Aim for about ${max} GIF${max === 1 ? '' : 's'} per generation, spread across different messages — fewer only when nothing fits. Put each one where it amplifies the emotion of its message
 - NEVER put URLs or links in "gif" or "content" — only the search phrase
 - The GIF complements "content"; "content" stays required (a short caption is fine)`;
 
@@ -60,7 +60,7 @@ const stickerSection = (max) => `
 
 - "sticker": optional string — a SHORT English search phrase (1-3 words) for a transparent sticker
 - The sticker pool is SMALL: simple gestures and moods hit it (thumbs up, crying, shock, clap, saluting); long scene-specific phrases usually find nothing
-- Same discipline as GIFs: sparingly, at most ${max} sticker${max === 1 ? '' : 's'} per generation, no URLs`;
+- Aim for about ${max} sticker${max === 1 ? '' : 's'} per generation — fewer only when nothing fits; no URLs`;
 
 const memeSection = (max) => `
 ## MEME ATTACHMENTS
@@ -70,7 +70,7 @@ const memeSection = (max) => `
 - Pick the template by the SHAPE of the joke (two contrasting options → drake / two buttons; escalation → expanding brain; an uncomfortable truth nobody admits → panik-kalm-panik), not just popularity — and fill the captions with a SPECIFIC detail from the current scene, never generic filler. If nothing fits, skip the meme
 - "top" is the text above the image, "bottom" below; either may be "" for one-panel templates
 - Write captions in the commenters' language; keep each line short (max ~60 chars)
-- Same discipline: sparingly, at most ${max} meme${max === 1 ? '' : 's'} per generation, no URLs
+- Aim for about ${max} meme${max === 1 ? '' : 's'} per generation, on different messages — fewer only when nothing fits; no URLs
 - The meme complements "content"; "content" stays required (a short caption is fine)`;
 
 // Mutual exclusion is taught once, only when more than one media type is in

@@ -61,6 +61,9 @@ export const defaultSettings = Object.freeze({
 
     // count + font (feed rendering)
     userCount: 5,                     // → {{count}}
+    // Fork: abort a request when the model is silent this long (seconds).
+    // 0 = wait forever (the original behaviour).
+    responseTimeoutSec: 180,
     fontFamily: 'system',
     fontSize: 15,
 
@@ -409,6 +412,7 @@ export const NUMERIC_SETTINGS = Object.freeze({
     stickerMax:   Object.freeze({ min: 0, max: 10, fallback: 1 }),
     memeMax:      Object.freeze({ min: 0, max: 5,  fallback: 1 }),
     soundVolume:  Object.freeze({ min: 0, max: 100, fallback: 30 }),
+    responseTimeoutSec: Object.freeze({ min: 0, max: 900, fallback: 180 }),
 });
 
 export function normalizeFiniteNumber(value, rule) {
