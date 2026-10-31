@@ -323,6 +323,14 @@
     cursor: zoom-in;
 }
 .dsc_gif_sticker { background: transparent; }
+/* Load fallback (fork): the media host never answered — the bracketed text
+   stands in while the hidden <img> keeps downloading; it swaps back on load. */
+.dsc_gif.dsc_gif_unloaded {
+    line-height: normal;
+    background: transparent;
+    border-radius: 0;
+}
+.dsc_gif.dsc_gif_unloaded .dsc_gif_img { display: none; }
 
 /* fullscreen media viewer: single reused <dialog> in the top layer (above all
    extension and ST chrome). Any tap, pinch-in or Esc closes it. */
