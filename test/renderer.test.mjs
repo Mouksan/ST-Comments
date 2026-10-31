@@ -303,3 +303,82 @@ test('upgradeMediaPlaceholders degrades unknown emote codes to textual codes', (
     assert.equal(upgradeMediaPlaceholders(feed2), 1);
     assert.equal(placeholder2.textContent, ':monkaS:');
 });
+
+// ── load fallback (fork addition): unreachable media host ──
+
+function makeLivePlaceholder(attrs) {
+    const classes = new Set();
+    return {
+        _attrs: { ...attrs },
+        children: [],
+        getAttribute(k) { return this._attrs[k] ?? null; },
+        setAttribute(k, v) { this._attrs[k] = v; },
+        appendChild(c) { this.children.push(c); c.remove = () => { this.children = this.children.filter(x => x !== c); }; },
+        classList: { add: (c) => classes.add(c), remove: (c) => classes.delete(c), contains: (c) => classes.has(c) },
+        textContent: 'stale',
+    };
+}
+const gifAttrs = {
+    'data-dsc-media-src': 'https://media.giphy.com/a.gif',
+    'data-dsc-media-type': 'gif',
+    'data-dsc-media-alt': 'fainting dramatic',
+};
+const feedOf = (node) => ({ querySelectorAll: (sel) => sel.startsWith('[data-dsc-media-src]') ? [node] : [] });
+const fallbackOf = (node) => node.children.find(c => String(c.className).includes('dsc_media_unloaded'));
+const wait = (ms) => new Promise(r => setTimeout(r, ms));
+
+test('media load fallback: a load error shows the bracketed query at once', () => {
+    const node = makeLivePlaceholder(gifAttrs);
+    assert.equal(upgradeMediaPlaceholders(feedOf(node), { loadTimeoutMs: 60_000 }), 1);
+    const img = node.children[0];
+    img._listeners.error();
+    const fb = fallbackOf(node);
+    assert.ok(fb, 'fallback appended');
+    assert.equal(fb.textContent, '[gif: fainting dramatic]');
+    assert.ok(node.classList.contains('dsc_gif_unloaded'));
+    assert.equal(img._attrs.loading, 'eager', 'hidden image keeps downloading');
+    assert.equal(img.src, 'https://media.giphy.com/a.gif', 'URL untouched');
+});
+
+test('media load fallback: a hanging image gets the text after the timeout, and a late load swaps it back', async () => {
+    const node = makeLivePlaceholder({ ...gifAttrs, 'data-dsc-media-type': 'sticker', 'data-dsc-media-alt': 'cat' });
+    upgradeMediaPlaceholders(feedOf(node), { loadTimeoutMs: 5 });
+    assert.ok(!fallbackOf(node), 'nothing before the timeout');
+    await wait(20);
+    assert.equal(fallbackOf(node)?.textContent, '[sticker: cat]');
+    const img = node.children[0];
+    img._listeners.load();
+    assert.ok(!fallbackOf(node), 'late load removes the text');
+    assert.ok(!node.classList.contains('dsc_gif_unloaded'));
+    assert.ok(node.children.includes(img), 'image stays');
+});
+
+test('media load fallback: an image that loads in time never shows the text', async () => {
+    const node = makeLivePlaceholder(gifAttrs);
+    upgradeMediaPlaceholders(feedOf(node), { loadTimeoutMs: 5 });
+    node.children[0]._listeners.load();
+    await wait(20);
+    assert.ok(!fallbackOf(node));
+});
+
+test('media load fallback: the clock starts only once the placeholder is on screen', async () => {
+    let observed = null;
+    let callback = null;
+    globalThis.IntersectionObserver = class {
+        constructor(cb) { callback = cb; }
+        observe(el) { observed = el; }
+        disconnect() {}
+    };
+    try {
+        const node = makeLivePlaceholder(gifAttrs);
+        upgradeMediaPlaceholders(feedOf(node), { loadTimeoutMs: 5 });
+        assert.equal(observed, node);
+        await wait(20);
+        assert.ok(!fallbackOf(node), 'off-screen lazy image is not flagged');
+        callback([{ isIntersecting: true }]);
+        await wait(20);
+        assert.equal(fallbackOf(node)?.textContent, '[gif: fainting dramatic]');
+    } finally {
+        delete globalThis.IntersectionObserver;
+    }
+});

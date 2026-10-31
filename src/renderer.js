@@ -63,14 +63,88 @@ function renderMediaFallback(msg) {
 }
 
 /**
+ * How long a visible GIF/sticker/meme may take to load before its bracketed
+ * text stands in for it (fork addition).
+ */
+export const MEDIA_LOAD_TIMEOUT_MS = 10_000;
+
+/**
+ * Load fallback (fork addition). When the media host is unreachable (a dead
+ * VPN, a throttled CDN) the <img> hangs or errors and the comment silently
+ * loses its punchline. After the image has been on screen for `timeoutMs`
+ * without loading — or immediately on a load error — the bracketed
+ * "[gif: query]" text appears in its place. The download is NOT cancelled:
+ * if the image arrives later, the text goes away and the image shows.
+ * Display-only: the stored feed keeps the URL untouched.
+ * The clock starts when the placeholder first scrolls into view, so a lazy
+ * image below the fold never gets flagged just for not being requested yet.
+ */
+function watchMediaLoad(node, img, type, url, timeoutMs) {
+    let fallback = null;
+    let timer = null;
+    let observer = null;
+    const stopClock = () => {
+        if (timer !== null) { clearTimeout(timer); timer = null; }
+        observer?.disconnect?.();
+        observer = null;
+    };
+    const show = () => {
+        stopClock();
+        if (fallback || (img.complete && img.naturalWidth > 0)) return;
+        // Hidden images still finish downloading only when eager.
+        img.setAttribute?.('loading', 'eager');
+        fallback = document.createElement('span');
+        fallback.className = 'dsc_media_fallback dsc_media_unloaded';
+        const label = img.alt ? `: ${img.alt}` : '';
+        fallback.textContent = `[${type}${label}]`;
+        node.appendChild?.(fallback);
+        node.classList?.add?.('dsc_gif_unloaded');
+    };
+    const startClock = () => {
+        if (timer !== null || fallback) return;
+        timer = setTimeout(show, Math.max(0, timeoutMs));
+        /** @type {any} */ (timer)?.unref?.();   // node tests: never hold the process open
+    };
+    img.addEventListener('load', () => {
+        stopClock();
+        if (!fallback) return;
+        fallback.remove?.();
+        fallback = null;
+        node.classList?.remove?.('dsc_gif_unloaded');
+    });
+    img.addEventListener('error', () => {
+        trace(`media failed to load: ${url}`);
+        show();
+    });
+    const IO = /** @type {any} */ (globalThis).IntersectionObserver;
+    if (typeof IO === 'function') {
+        try {
+            observer = new IO((entries) => {
+                if (entries.some(e => e.isIntersecting)) {
+                    observer?.disconnect?.();
+                    observer = null;
+                    startClock();
+                }
+            });
+            observer.observe(node);
+            return;
+        } catch {
+            observer = null;
+        }
+    }
+    startClock();
+}
+
+/**
  * Replace every media placeholder under `root` with a real <img> element,
  * built via createElement (no HTML parsing of the URL). Called from the feed
  * controller after innerHTML assignment — this covers fresh renders, cache
  * restores and pinned feeds, which all funnel through the same replace().
  * @param {Element|{ querySelectorAll?: Function }} root
+ * @param {{ loadTimeoutMs?: number }} [opts]
  * @returns {number} how many placeholders were upgraded
  */
-export function upgradeMediaPlaceholders(root) {
+export function upgradeMediaPlaceholders(root, opts = {}) {
     try {
         if (!root || typeof root.querySelectorAll !== 'function') return 0;
         const nodes = root.querySelectorAll('[data-dsc-media-src], [data-dsc-emote-code]');
@@ -115,9 +189,9 @@ export function upgradeMediaPlaceholders(root) {
             img.setAttribute('decoding', 'async');
             img.setAttribute('referrerpolicy', 'no-referrer');
             img.alt = node.getAttribute?.('data-dsc-media-alt') || '';
-            img.src = rawUrl;
-            img.addEventListener('error', () => trace(`media failed to load: ${rawUrl}`));
             node.textContent = '';
+            watchMediaLoad(node, img, type, rawUrl, opts.loadTimeoutMs ?? MEDIA_LOAD_TIMEOUT_MS);
+            img.src = rawUrl;
             node.appendChild?.(img);
             node.classList?.add?.(`dsc_gif_${type}`);
             upgraded++;
